@@ -17,6 +17,9 @@ Universal proxy client for Windows applications - route any application through 
       - [Process Rules](#process-rules)
       - [Exporting and Importing Rules](#exporting-and-importing-rules)
       - [Activity Monitoring](#activity-monitoring)
+      - [Response Cache](#response-cache)
+      - [Request Logging](#request-logging)
+      - [Decrypting HTTPS](#decrypting-https)
     - [Command Line Interface (CLI)](#command-line-interface-cli)
       - [Profile Format](#profile-format)
       - [Basic Usage](#basic-usage)
@@ -246,6 +249,89 @@ saved per profile. It only changes what is listed: rules are applied to the same
 
 **Note:** Adding a rule with action **PROXY** while no proxy is configured will fall back to a direct connection. Configure at least one proxy server before using PROXY rules.
 
+#### Response Cache
+
+**Settings → Cache HTTP Responses** turns the response cache on or off (off by default, saved per profile). While it
+is on, the responses of proxied **plain HTTP** requests are kept in memory and identical later requests - from any
+application and over any connection - are answered from memory without going through the proxy. A response served
+from the cache carries the header `X-ProxyBridge-Cache: HIT` and an `Age` header, and the Activity log shows
+`[CACHE] HIT ...`. **Settings → Clear Response Cache** empties it; turning the cache off empties it too.
+
+What is cached follows the usual HTTP caching rules:
+
+- only `GET` requests without `Authorization` or `Range`; a request with `Cache-Control: no-cache` / `Pragma: no-cache`
+  always goes to the server (its fresh response replaces the cached one), `no-store` bypasses the cache completely
+- only responses with status 200, 203, 300, 301 or 308 and a `Content-Length`, and not those with `no-store`,
+  `no-cache`, `private`, `Set-Cookie` or a `Vary` other than `Accept-Encoding` (the `Accept-Encoding` value is part of
+  the cache key)
+- a response is kept for its `s-maxage` / `max-age` / `Expires` lifetime (at most 24 hours), or **5 minutes** when it
+  states none
+- the cache holds up to 64 MB (least recently used responses are dropped first), at most 8 MB per response
+
+By default the cache covers **plain HTTP** only; to cache **HTTPS** as well, turn on **Decrypt HTTPS** (see below).
+The cache only applies to proxied TCP connections (rules with action **PROXY**).
+
+#### Request Logging
+
+**Settings → Log Full Requests** turns full request logging on or off (off by default, saved per profile).
+**Settings → Open Request Log** opens the file in Notepad. Every proxied request is appended to
+
+```
+%ProgramData%\ProxyBridge\Logs\requests.log
+```
+
+with the time, a per-connection number, the application (name and PID), the destination (IP, port and the domain
+name when known) and the proxy, followed by:
+
+- **plain HTTP**: the complete request - request line, every header and the body (up to 1 MB per request; binary bodies
+  are written as a hex dump of the first 64 KB) - and a line with the response status, the body size and the cache
+  result (`HIT`, `MISS`, `MISS, stored`, `BYPASS` or `off`)
+- **HTTPS / TLS**: by default the server name (SNI) only - the content is encrypted. Turn on **Decrypt HTTPS**
+  (see below) to log the full decrypted HTTPS request and response instead
+- **other TCP protocols**: a hex dump of the first bytes the application sent
+
+The file is rotated to `requests.log.1` when it grows past 50 MB.
+
+> **Warning:** the request log contains everything the applications send over plain HTTP - cookies, tokens, passwords
+> and form data - in clear text, and other users of the computer may be able to read files under `%ProgramData%`.
+> Turn it on only while you need it and delete the file afterwards.
+
+Both features inspect only proxied TCP connections whose application speaks HTTP/1.x first. WebSocket / `Upgrade`,
+`CONNECT`, `Expect: 100-continue` uploads and anything that is not HTTP are passed through unchanged. While either
+feature is on, the inspected connections are handled outside the **Live connections** view.
+
+#### Decrypting HTTPS
+
+By default HTTPS is end-to-end encrypted, so neither the cache nor the request log can see inside it.
+**Settings → Decrypt HTTPS (MITM)** lets ProxyBridge decrypt proxied HTTPS so both features cover it too (off by
+default, saved per profile). It is a deliberate **man-in-the-middle**: for each proxied HTTPS connection ProxyBridge
+
+1. terminates the application's TLS using a certificate it generates on the fly for the requested host, signed by a
+   local **ProxyBridge root CA**, and
+2. opens its own TLS connection to the real server (through the same proxy), **validating the server's certificate**
+   normally.
+
+The decrypted bytes in the middle are ordinary HTTP, so the response cache and the full request log work for HTTPS
+exactly as they do for plain HTTP.
+
+**Trusting the certificate.** An application only accepts ProxyBridge's generated certificate if it trusts the
+ProxyBridge CA. **Settings → Install HTTPS Certificate** adds the CA to the machine's *Trusted Root Certification
+Authorities* store (the ProxyBridge service has the rights to do this; the CLI does it with `--install-cert`). The
+CA certificate is also written to `%ProgramData%\ProxyBridge\ca\ProxyBridge-CA.crt` so you can import it where you
+need it (for example a browser or runtime that keeps its own trust store).
+
+- The CA private key and the generated host certificates never leave your machine. The CA is created once and reused.
+- Applications that **pin** their certificates (many browsers for their own services, most mobile and desktop apps)
+  will still refuse the generated certificate - that is TLS working as intended. HTTPS decryption is meant for your
+  own debugging of applications you control, not for breaking into traffic.
+- Decryption uses TLS 1.2 toward the application; connections that cannot be intercepted (pinning, client
+  certificates, non-TLS) are passed through untouched.
+- The TLS 1.3-only `0-RTT`/early-data path is not used.
+
+> **Warning:** turning this on means ProxyBridge reads the plaintext of secure connections, and - with the request log
+> on - writes it to disk. Only decrypt traffic you are allowed to, install the CA only on machines you control, and
+> remove it (`certlm.msc` → Trusted Root Certification Authorities → *ProxyBridge Local Root CA*) when you are done.
+
 ### Command Line Interface (CLI)
 
 `ProxyBridge_CLI.exe` is a lightweight native CLI that loads a `.pbprofile` exported from the GUI and runs ProxyBridge headlessly - no GUI required.
@@ -262,6 +348,9 @@ The CLI reads `.pbprofile` files exported directly from the GUI (**Profile → E
 | `ProxyRules[]` | Array of routing rules (up to 256) |
 | `ProxyRules[].LocalhostViaProxy` | Per rule: also proxy `127.x.x.x` / `::1` traffic that matches this rule (default `false`) |
 | `IsTrafficLoggingEnabled` | Enable/disable connection logging |
+| `ResponseCache` | Cache plain-HTTP responses in memory (default `false`, see [Response Cache](#response-cache)) |
+| `RequestLogging` | Write every request in full to the request log (default `false`, see [Request Logging](#request-logging)) |
+| `HttpsIntercept` | Decrypt proxied HTTPS so the cache / log cover it (default `false`, see [Decrypting HTTPS](#decrypting-https)) |
 | `ProxyConfigId` | Per-rule proxy assignment (maps to `ProxyConfigs[].Id`) |
 
 #### Basic Usage
@@ -275,6 +364,13 @@ ProxyBridge_CLI.exe --profile myconfig.pbprofile --verbose 2
 
 # Run with full log and connection output
 ProxyBridge_CLI.exe --profile myconfig.pbprofile --verbose 3
+
+# Cache plain-HTTP responses and log every request in full (overrides the profile)
+ProxyBridge_CLI.exe --profile myconfig.pbprofile --cache on --log-requests on
+
+# Install the HTTPS certificate once, then run with HTTPS decryption on
+ProxyBridge_CLI.exe --install-cert
+ProxyBridge_CLI.exe --profile myconfig.pbprofile --decrypt-https on --log-requests on
 
 # Check for updates (does not require Administrator)
 ProxyBridge_CLI.exe --update
@@ -308,12 +404,27 @@ Options:
                          2 - Connection events only
                          3 - Both logs and connections
 
+  --cache <on|off>     Cache plain-HTTP responses in memory (overrides the profile's
+                       "ResponseCache"; default off). HTTPS is never cached.
+
+  --log-requests <on|off>
+                       Write every request in full (head + body) to
+                       %ProgramData%\ProxyBridge\Logs\requests.log (overrides the
+                       profile's "RequestLogging"; default off)
+
+  --decrypt-https <on|off>
+                       Decrypt proxied HTTPS (man-in-the-middle) so the cache and
+                       request log also cover it (overrides "HttpsIntercept";
+                       default off). Apps must trust the ProxyBridge certificate.
+
   --version            Show version information
   -?, -h, --help       Show help
 
 Commands:
   --update             Check for updates and download latest installer from GitHub
                        (does not require Administrator)
+  --install-cert       Install the ProxyBridge HTTPS certificate in the machine
+                       Trusted Root store (requires Administrator)
 ```
 
 **Notes:**

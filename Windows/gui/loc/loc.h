@@ -41,6 +41,8 @@ enum {
     S_UPD_DONTASK, S_UPD_LATEST, S_UPD_ERR, S_UPD_DLING, S_UPD_DLFAIL,
     S_L_NAME, S_COL_NAME, S_CHK_SENDDOMAIN,
     S_M_ZOOM_IN, S_M_ZOOM_OUT, S_M_ZOOM_RESET,
+    S_M_RESPCACHE, S_M_RESPCACHE_CLEAR, S_M_REQLOG, S_M_REQLOG_OPEN, S_REQLOG_NOFILE, S_RESPCACHE_CLEARED,
+    S_M_HTTPS, S_M_TLS_INSTALL, S_HTTPS_WARN, S_TLS_INSTALLED, S_TLS_INSTALL_FAIL,
     S_COUNT
 };
 
@@ -226,6 +228,21 @@ static const wchar_t* const g_strings[S_COUNT][2] = {
     /* S_M_ZOOM_IN         */ { L"Increase Text Size	Ctrl++", L"放大文字	Ctrl++" },
     /* S_M_ZOOM_OUT        */ { L"Decrease Text Size	Ctrl+-", L"缩小文字	Ctrl+-" },
     /* S_M_ZOOM_RESET      */ { L"Reset Text Size	Ctrl+0", L"重置文字大小	Ctrl+0" },
+    /* S_M_RESPCACHE       */ { L"Cache HTTP Responses", L"缓存 HTTP 响应" },
+    /* S_M_RESPCACHE_CLEAR */ { L"Clear Response Cache", L"清除响应缓存" },
+    /* S_M_REQLOG          */ { L"Log Full Requests", L"完整记录请求" },
+    /* S_M_REQLOG_OPEN     */ { L"Open Request Log", L"打开请求日志" },
+    /* S_REQLOG_NOFILE     */ { L"The request log is empty. Turn on Settings > Log Full Requests and make some requests first.",
+                                L"请求日志为空。请先开启 设置 > 完整记录请求 并产生一些请求。" },
+    /* S_RESPCACHE_CLEARED */ { L"Response cache cleared", L"响应缓存已清除" },
+    /* S_M_HTTPS           */ { L"Decrypt HTTPS (MITM)", L"解密 HTTPS (中间人)" },
+    /* S_M_TLS_INSTALL     */ { L"Install HTTPS Certificate", L"安装 HTTPS 证书" },
+    /* S_HTTPS_WARN        */ { L"Decrypting HTTPS makes ProxyBridge read the content of secure connections. It works only for applications that trust the ProxyBridge certificate - install it with \"Install HTTPS Certificate\". Many apps pin their certificates and will still refuse. Turn this on only for your own debugging.\n\nEnable HTTPS decryption now?",
+                                L"解密 HTTPS 会让 ProxyBridge 读取加密连接的内容。仅对信任 ProxyBridge 证书的应用有效 -- 请用\"安装 HTTPS 证书\"安装。许多应用固定了证书，仍会拒绝。请仅在自行调试时开启。\n\n现在启用 HTTPS 解密吗？" },
+    /* S_TLS_INSTALLED     */ { L"The ProxyBridge certificate was installed in the machine Trusted Root store. Applications that use the system certificate store will now accept decrypted HTTPS connections.",
+                                L"ProxyBridge 证书已安装到本机受信任根存储。使用系统证书存储的应用现在会接受被解密的 HTTPS 连接。" },
+    /* S_TLS_INSTALL_FAIL  */ { L"Could not install the ProxyBridge certificate. Administrator rights are required (the ProxyBridge service normally has them).",
+                                L"无法安装 ProxyBridge 证书。需要管理员权限（ProxyBridge 服务通常具有该权限）。" },
 };
 
 static const wchar_t* T(int id) { return g_strings[id][g_lang ? 1 : 0]; }

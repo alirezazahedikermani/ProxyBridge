@@ -70,7 +70,7 @@ New-Item -ItemType Directory -Path $Out | Out-Null
 $wdDll = Join-Path $WinDivertPath "$Arch\WinDivert.dll"
 if (Test-Path $wdDll) { Copy-Item $wdDll $Out } else { Write-Host "WARNING: $wdDll not found; the engine tests need it to start" -ForegroundColor Yellow }
 
-$core = 'ProxyBridge.c','pb_util.c','pb_process.c','pb_rules.c','pb_proxy.c','pb_dns.c','pb_socks5.c','pb_http.c','pb_conntrack.c','pb_relay.c','pb_sockmap.c' | ForEach-Object { "src\$_" }
+$core = 'ProxyBridge.c','pb_util.c','pb_process.c','pb_rules.c','pb_proxy.c','pb_dns.c','pb_socks5.c','pb_http.c','pb_conntrack.c','pb_relay.c','pb_sockmap.c','pb_httpcache.c','pb_tls.c' | ForEach-Object { "src\$_" }
 $warn = '/W3 /wd4100 /wd4189 /wd4267 /wd4244 /wd4996'
 $wdInc = "/I`"$WinDivertPath\include`""
 $wdLib = "/LIBPATH:`"$WinDivertPath\$Arch`""
@@ -78,7 +78,7 @@ $wdLib = "/LIBPATH:`"$WinDivertPath\$Arch`""
 $clPlain = "/D_CRT_SECURE_NO_WARNINGS"
 $clUni   = "/utf-8 /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS"
 $clCore  = "/Isrc $wdInc /DPROXYBRIDGE_EXPORTS /D_CRT_SECURE_NO_WARNINGS /D_WINSOCK_DEPRECATED_NO_WARNINGS"
-$lnCore  = "$wdLib WinDivert.lib ws2_32.lib iphlpapi.lib advapi32.lib"
+$lnCore  = "$wdLib WinDivert.lib ws2_32.lib iphlpapi.lib advapi32.lib secur32.lib crypt32.lib"
 $lnProf  = 'user32.lib advapi32.lib shell32.lib'
 $lnGui   = '/SUBSYSTEM:CONSOLE /ENTRY:wWinMainCRTStartup user32.lib gdi32.lib comctl32.lib shell32.lib comdlg32.lib winhttp.lib advapi32.lib dwmapi.lib uxtheme.lib ole32.lib uuid.lib'
 $prof    = 'gui\profile\profile.c'
@@ -96,6 +96,7 @@ $tests = @(
     @{ n='test_conntrack';       src=@('tests\test_conntrack.c') + $core;                   cl=$clCore;  link=$lnCore; ui=$false },
     @{ n='test_flows';           src=@('tests\test_flows.c') + $core;                       cl=$clCore;  link=$lnCore; ui=$false },
     @{ n='test_dns';             src=@('tests\test_dns.c') + $core;                         cl=$clCore;  link=$lnCore; ui=$false },
+    @{ n='test_httpcache';       src=@('tests\test_httpcache.c') + $core;                  cl=$clCore;  link=$lnCore; ui=$false },
     @{ n='test_proxy_protocols'; src=@('tests\test_proxy_protocols.c') + $core;             cl=$clCore;  link=$lnCore; ui=$false },
     @{ n='test_cli';             src=@('tests\test_cli.c');                                 cl="$clPlain /D_WINSOCK_DEPRECATED_NO_WARNINGS /D_WIN32_WINNT=0x0601"; link='winhttp.lib shell32.lib advapi32.lib'; ui=$false },
     @{ n='test_gui_misc';        src=@('tests\test_gui_misc.c', $prof);                     cl=$clUni;   link=$lnGui;  ui=$false },

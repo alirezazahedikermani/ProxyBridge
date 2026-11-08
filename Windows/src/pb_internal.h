@@ -418,6 +418,47 @@ BOOL relay_start(SOCKET client, SOCKET proxy, const FLOW_META *meta);
 UINT32 relay_flows_snapshot(PB_FLOW *out, UINT32 max);   // live proxied TCP connections, newest first; raw fields only
 extern volatile LONG g_active_relays;
 extern volatile LONG g_handler_threads;   // per-connection handshake threads still running (Stop waits for them)
+// Hands two handshaken sockets to the IOCP relay pool, or relays them on the calling thread if the pool is unavailable.
+// Takes ownership of both sockets (closes them if ProxyBridge is stopping).
+void relay_or_block(SOCKET client, SOCKET proxy, const FLOW_META *meta);
+
+// ---- byte-stream abstraction (PBIO) ----
+// The HTTP engine (cache + request log) reads and writes through a PBIO so it can run unchanged over a raw socket
+// or over a decrypted TLS stream (pb_tls.c). read()/write() move plaintext; for a TLS stream the backend encrypts
+// on write and decrypts on read. Every wait wakes about once a second so ProxyBridge_Stop is never held up.
+typedef struct PBIO PBIO;
+struct PBIO {
+    int    (*read)(PBIO *io, char *buf, int cap, DWORD idle_ms);   // >0 = bytes, 0 = clean EOF, -1 = error/timeout/stopping
+    int    (*write)(PBIO *io, const char *buf, int len);           // writes all `len`: 0 = ok, -1 = error
+    BOOL   (*pending)(PBIO *io);                                    // plaintext already buffered (select on `sock` would miss it)
+    void   (*destroy)(PBIO *io, BOOL send_shutdown);               // closes the underlying socket and frees the PBIO
+    SOCKET sock;                                                   // underlying socket, for select()
+    BOOL   is_tls;                                                 // TRUE: cannot be handed to the raw IOCP relay
+};
+
+// ---- pb_httpcache.c ----
+extern volatile BOOL g_resp_cache_enabled;   // TRUE: cacheable plain-HTTP responses are kept and served from memory
+extern volatile BOOL g_req_log_enabled;      // TRUE: every request is written in full to the request log file
+extern volatile BOOL g_https_intercept_enabled;  // TRUE: proxied HTTPS is decrypted (MITM) so the cache / log also cover it
+// Drives a proxied TCP connection exchange by exchange when it carries plain HTTP (cache + request log), otherwise
+// hands it to the relay unchanged. Takes ownership of both sockets.
+void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta);
+void resp_cache_clear(void);
+
+// ---- pb_tls.c : SChannel TLS man-in-the-middle for HTTPS interception ----
+// Creates / loads a local ProxyBridge root CA (and one shared leaf key); returns FALSE if the CA cannot be set up.
+BOOL  pb_tls_ensure_ca(void);
+// Terminates TLS toward the application: `host` is the SNI / certificate name, `initial`/`initial_len` are the first
+// bytes already read from the client (the ClientHello). On success returns a plaintext PBIO and owns `client`;
+// on failure closes `client` and returns NULL.
+PBIO *pb_tls_accept(SOCKET client, const char *host, const char *initial, int initial_len);
+// Opens a real TLS connection to the origin over an already-connected upstream socket (`host` = SNI, validated).
+// On success returns a plaintext PBIO and owns `upstream`; on failure closes `upstream` and returns NULL.
+PBIO *pb_tls_connect(SOCKET upstream, const char *host);
+void  pb_tls_ensure_exported(void);                   // (re)write the CA .crt to %ProgramData%\ProxyBridge\ca (best effort)
+BOOL  pb_tls_ca_cert_path(char *buf, size_t size);   // UTF-8 path of the exported CA certificate (.crt)
+int   pb_tls_install_ca(void);                        // add the CA to the machine Trusted Root store; 0 = ok, <0 = error
+void  pb_tls_cleanup(void);
 
 // ---- ProxyBridge.c ----
 DWORD WINAPI packet_processor(LPVOID arg);

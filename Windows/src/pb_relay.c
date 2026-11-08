@@ -717,9 +717,25 @@ static DWORD WINAPI connection_handler_impl(LPVOID arg)
     WSAIoctl(socks_sock, SIO_KEEPALIVE_VALS, &keepalive_settings, sizeof(keepalive_settings), NULL, 0, &bytes_returned, NULL, NULL);
     WSAIoctl(client_sock, SIO_KEEPALIVE_VALS, &keepalive_settings, sizeof(keepalive_settings), NULL, 0, &bytes_returned, NULL, NULL);
 
-    // Preferred path: hand both sockets to the IOCP pool (no per-connection threads).
-    if (relay_start(client_sock, socks_sock, &meta))
+    // Response cache / request log: plain-HTTP connections are driven exchange by exchange (everything else is
+    // handed straight back to the relay below, unchanged).
+    if (g_resp_cache_enabled || g_req_log_enabled)
+    {
+        http_inspect_session(client_sock, socks_sock, &meta);
         return 0;
+    }
+
+    relay_or_block(client_sock, socks_sock, &meta);
+    return 0;
+}
+
+void relay_or_block(SOCKET client_sock, SOCKET socks_sock, const FLOW_META *meta)
+{
+    if (!running) { closesocket(client_sock); closesocket(socks_sock); return; }
+
+    // Preferred path: hand both sockets to the IOCP pool (no per-connection threads).
+    if (relay_start(client_sock, socks_sock, meta))
+        return;
 
     TRANSFER_CONFIG *transfer_config = (TRANSFER_CONFIG *)malloc(sizeof(TRANSFER_CONFIG));
 
@@ -728,18 +744,14 @@ static DWORD WINAPI connection_handler_impl(LPVOID arg)
         log_message("Memory allocation failed for transfer_config");
         closesocket(client_sock);
         closesocket(socks_sock);
-        return 0;
+        return;
     }
 
     transfer_config->from_socket = client_sock;
     transfer_config->to_socket = socks_sock;
 
-    // both transfer in current thread
+    // both transfer in current thread (sockets are closed in transfer_handler)
     transfer_handler((LPVOID)transfer_config);
-
-    // Sockets already closed in transfer_handler!
-
-    return 0;
 }
 
 // One-directional relay: reads from `from` and writes to `to`.
