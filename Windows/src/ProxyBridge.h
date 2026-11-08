@@ -100,6 +100,13 @@ PROXYBRIDGE_API void ProxyBridge_GetResponseCacheStats(UINT32* entries, UINT64* 
 // whatever the applications send (cookies, tokens, passwords) in clear text.
 PROXYBRIDGE_API void ProxyBridge_SetRequestLoggingEnabled(BOOL enable);
 PROXYBRIDGE_API BOOL ProxyBridge_GetRequestLogPath(char* buffer, size_t size);   // UTF-8 path of the request log file
+// HTTPS interception (default off). When on, proxied HTTPS connections are decrypted with a man-in-the-middle:
+// ProxyBridge presents a certificate it mints for the requested host, signed by a local ProxyBridge root CA, and
+// opens its own validated TLS connection to the origin - so the response cache and the request log also cover HTTPS.
+// Applications must trust the ProxyBridge CA (install it, below) or they will reject the connection, as they should.
+PROXYBRIDGE_API void ProxyBridge_SetHttpsInterceptEnabled(BOOL enable);
+PROXYBRIDGE_API int  ProxyBridge_InstallTlsCertificate(void);                     // add the CA to the machine Trusted Root store; 0 = ok, <0 = error
+PROXYBRIDGE_API BOOL ProxyBridge_GetTlsCertificatePath(char* buffer, size_t size); // UTF-8 path of the exported CA certificate (.crt)
 PROXYBRIDGE_API BOOL ProxyBridge_Start(void);
 PROXYBRIDGE_API BOOL ProxyBridge_Stop(void);
 #ifdef __cplusplus

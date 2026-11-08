@@ -17,6 +17,7 @@ static struct { UINT32 id; char proc[128], hosts[128], ports[64], domains[128]; 
 static UINT32 g_enabled, g_disabled, g_deleted, g_moveId, g_movePos, g_posQuery, g_delProxy;
 static int g_trafficArg = -1, g_enableArg = -1, g_logAllArg = -1, g_cleared = 0, g_started = 0, g_stopped = 0;
 static int g_cacheArg = -1, g_cacheCleared = 0, g_reqLogArg = -1;
+static int g_httpsArg = -1, g_installRc = 0, g_installCalls = 0;
 
 static void cp(char* d, size_t n, const char* s) { if (s) strncpy_s(d, n, s, _TRUNCATE); else d[0] = 0; }   /* long fuzz strings are cut, not fatal */
 static UINT32 SAddProxy(PBProxyType t, const char* ip, unsigned short port, const char* u, const char* p, BOOL sd) { P.type = t; cp(P.ip, 64, ip); P.port = port; cp(P.user, 64, u); cp(P.pass, 64, p); P.userNull = !u; P.passNull = !p; P.sd = sd; P.calls++; return 41; }
@@ -36,6 +37,8 @@ static void   SLogAll(BOOL v)  { g_logAllArg = v; }
 static void   SCache(BOOL v)   { g_cacheArg = v; }
 static void   SCacheClear(void) { g_cacheCleared++; }
 static void   SReqLog(BOOL v)  { g_reqLogArg = v; }
+static void   SHttps(BOOL v)   { g_httpsArg = v; }
+static int    SInstall(void)   { g_installCalls++; return g_installRc; }
 static void   SClear(void)     { g_cleared++; }
 static BOOL   SStart(void)     { g_started++; return TRUE; }
 static BOOL   SStop(void)      { g_stopped++; return FALSE; }
@@ -69,6 +72,7 @@ int main(void)
     g_api.MoveRuleToPosition = SMove; g_api.GetRulePosition = SGetPos;
     g_api.SetTrafficLoggingEnabled = STraffic; g_api.SetEnabled = SEnabled; g_api.SetLogEveryConnection = SLogAll; g_api.ClearConnectionLogs = SClear;
     g_api.SetResponseCacheEnabled = SCache; g_api.ClearResponseCache = SCacheClear; g_api.SetRequestLoggingEnabled = SReqLog;
+    g_api.SetHttpsInterceptEnabled = SHttps; g_api.InstallTlsCertificate = SInstall;
     g_api.Start = SStart; g_api.Stop = SStop; g_api.TestProxyConfigEx = NULL; g_api.GetFlows = SGetFlows;
     UINT32 ret;
 
@@ -119,6 +123,11 @@ int main(void)
     begin(PBOP_SET_REQ_LOG);     PbW_U32(&W, 1); CHECK(run(&ret) && g_reqLogArg == 1);            /* full request log */
     begin(PBOP_SET_REQ_LOG);     PbW_U32(&W, 0); CHECK(run(&ret) && g_reqLogArg == 0);
     begin(PBOP_SET_REQ_LOG);                     CHECK(!run(&ret));
+    begin(PBOP_SET_HTTPS_INTERCEPT); PbW_U32(&W, 1); CHECK(run(&ret) && g_httpsArg == 1);         /* HTTPS interception */
+    begin(PBOP_SET_HTTPS_INTERCEPT); PbW_U32(&W, 0); CHECK(run(&ret) && g_httpsArg == 0);
+    begin(PBOP_SET_HTTPS_INTERCEPT);                 CHECK(!run(&ret));
+    g_installRc = 0;  begin(PBOP_INSTALL_TLS_CERT); CHECK(run(&ret) && ret == 0 && g_installCalls == 1);
+    g_installRc = -3; begin(PBOP_INSTALL_TLS_CERT); CHECK(run(&ret) && (int)ret == -3);           /* error code passes through */
     begin(PBOP_CLEAR_CONN_LOGS);                 CHECK(run(&ret) && g_cleared == 1);
     begin(PBOP_START);                           CHECK(run(&ret) && ret == 1 && g_started == 1);
     begin(PBOP_STOP);                            CHECK(run(&ret) && ret == 0 && g_stopped == 1);

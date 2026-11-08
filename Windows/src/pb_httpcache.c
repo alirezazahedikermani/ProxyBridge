@@ -44,6 +44,7 @@
 
 volatile BOOL g_resp_cache_enabled = FALSE;
 volatile BOOL g_req_log_enabled = FALSE;
+volatile BOOL g_https_intercept_enabled = FALSE;
 
 // ============================================================================================
 // growable byte buffer
@@ -615,47 +616,112 @@ static void reqlog_non_http(const HSESS *s, const char *first, size_t n, BOOL se
 }
 
 // ============================================================================================
-// socket helpers (every wait wakes up once a second so ProxyBridge_Stop is never held up)
+// PBIO backends and stream helpers (every wait wakes once a second so ProxyBridge_Stop is never held up)
 // ============================================================================================
-// bit 1 = a readable, bit 2 = b readable; 0 = idle timeout; -1 = stopping / error
-static int wait_readable(SOCKET a, SOCKET b, DWORD idle_ms)
+// Raw socket backend: the HTTP engine runs over this when the connection is plain (not decrypted TLS).
+typedef struct { PBIO io; SOCKET s; BOOL owns; } RAWIO;
+
+static int raw_read(PBIO *io, char *buf, int cap, DWORD idle_ms)
 {
+    RAWIO *r = (RAWIO *)io;
+    ULONGLONG start = GetTickCount64();
+    while (running)
+    {
+        fd_set rf; FD_ZERO(&rf); FD_SET(r->s, &rf);
+        struct timeval tv = { 1, 0 };
+        int sr = select(0, &rf, NULL, NULL, &tv);
+        if (sr == SOCKET_ERROR) return -1;
+        if (sr > 0) { int n = recv(r->s, buf, cap, 0); return n == SOCKET_ERROR ? -1 : n; }   // 0 = peer closed
+        if (GetTickCount64() - start >= idle_ms) return -1;
+    }
+    return -1;
+}
+static int raw_write(PBIO *io, const char *buf, int len) { RAWIO *r = (RAWIO *)io; return send_all(r->s, buf, len) == SOCKET_ERROR ? -1 : 0; }
+static BOOL raw_pending(PBIO *io) { (void)io; return FALSE; }
+static void raw_destroy(PBIO *io, BOOL sh)
+{
+    RAWIO *r = (RAWIO *)io;
+    if (r->owns && r->s != INVALID_SOCKET) { if (sh) shutdown(r->s, SD_SEND); closesocket(r->s); }
+    free(r);
+}
+static PBIO *pbio_socket(SOCKET s)
+{
+    RAWIO *r = (RAWIO *)calloc(1, sizeof(*r));
+    if (r == NULL) return NULL;
+    r->io.read = raw_read; r->io.write = raw_write; r->io.pending = raw_pending; r->io.destroy = raw_destroy;
+    r->io.sock = s; r->io.is_tls = FALSE; r->s = s; r->owns = TRUE;
+    return &r->io;
+}
+// Hands the socket back so it can go to the IOCP relay; the wrapper no longer owns or closes it.
+static SOCKET pbio_release_socket(PBIO *io) { RAWIO *r = (RAWIO *)io; SOCKET s = r->s; r->s = INVALID_SOCKET; r->owns = FALSE; return s; }
+
+// Plaintext bidirectional pump used when a TLS-terminated connection turns out not to be a plain exchange
+// (it cannot go to the raw relay - the relay would copy ciphertext; here we re-encrypt on each write).
+typedef struct { PBIO *src, *dst; } PUMP;
+static DWORD WINAPI pump_dir(LPVOID arg)
+{
+    PUMP *pm = (PUMP *)arg;
+    char *buf = (char *)malloc(HTTP_IO_CHUNK);
+    if (buf)
+    {
+        int n;
+        while ((n = pm->src->read(pm->src, buf, HTTP_IO_CHUNK, HTTP_IDLE_KEEPALIVE_MS)) > 0)
+            if (pm->dst->write(pm->dst, buf, n) != 0) break;
+        free(buf);
+    }
+    shutdown(pm->src->sock, SD_BOTH);   // wake the sibling direction's blocked recv
+    shutdown(pm->dst->sock, SD_BOTH);
+    return 0;
+}
+static void pbio_pump(PBIO *a, PBIO *b)
+{
+    PUMP up = { a, b }, dn = { b, a };
+    HANDLE th = CreateThread(NULL, 0, pump_dir, &up, 0, NULL);
+    pump_dir(&dn);
+    if (th) { WaitForSingleObject(th, INFINITE); CloseHandle(th); }
+}
+
+// bit 1 = a readable, bit 2 = b readable; 0 = idle timeout; -1 = stopping / error.
+static int wait_readable(PBIO *a, PBIO *b, DWORD idle_ms)
+{
+    if (a->pending(a)) return 1;
+    if (b && b->pending(b)) return 2;
     ULONGLONG start = GetTickCount64();
     while (running)
     {
         fd_set rf; FD_ZERO(&rf);
-        FD_SET(a, &rf);
-        if (b != INVALID_SOCKET) FD_SET(b, &rf);
+        FD_SET(a->sock, &rf);
+        if (b) FD_SET(b->sock, &rf);
         struct timeval tv = { 1, 0 };
         int r = select(0, &rf, NULL, NULL, &tv);
         if (r == SOCKET_ERROR) return -1;
-        if (r > 0) return (FD_ISSET(a, &rf) ? 1 : 0) | ((b != INVALID_SOCKET && FD_ISSET(b, &rf)) ? 2 : 0);
+        if (r > 0) return (FD_ISSET(a->sock, &rf) ? 1 : 0) | ((b && FD_ISSET(b->sock, &rf)) ? 2 : 0);
         if (GetTickCount64() - start >= idle_ms) return 0;
+        if (a->pending(a)) return 1;
+        if (b && b->pending(b)) return 2;
     }
     return -1;
 }
 
-// Reads what is available from s into b. >0 bytes read, 0 = peer closed, -1 = error / timeout / stopping.
-static int fill(SOCKET s, HBUF *b, DWORD idle_ms)
+// Reads what is available from `io` into b. >0 bytes read, 0 = peer closed, -1 = error / timeout / stopping.
+static int fill(PBIO *io, HBUF *b, DWORD idle_ms)
 {
-    if (wait_readable(s, INVALID_SOCKET, idle_ms) <= 0) return -1;
     if (!hb_reserve(b, HTTP_IO_CHUNK)) return -1;
-    int n = recv(s, b->p + b->len, HTTP_IO_CHUNK, 0);
-    if (n == SOCKET_ERROR) return -1;
-    b->len += (size_t)n;
+    int n = io->read(io, b->p + b->len, HTTP_IO_CHUNK, idle_ms);
+    if (n > 0) b->len += (size_t)n;
     return n;
 }
 
 // Reads until `in` holds a complete head. Returns the head length (including the blank line), 0 = peer closed before
 // any byte of a head, -1 = error, -2 = head too large / peer closed mid-head.
-static long read_head(SOCKET s, HBUF *in, DWORD idle_ms)
+static long read_head(PBIO *io, HBUF *in, DWORD idle_ms)
 {
     for (;;)
     {
         const char *e = find_crlfcrlf(in->p ? in->p : "", in->len);
         if (e) return (long)(e - in->p) + 4;
         if (in->len >= HTTP_HEAD_MAX) return -2;
-        int n = fill(s, in, idle_ms);
+        int n = fill(io, in, idle_ms);
         if (n == 0) return in->len == 0 ? 0 : -2;
         if (n < 0) return -1;
     }
@@ -663,7 +729,7 @@ static long read_head(SOCKET s, HBUF *in, DWORD idle_ms)
 
 // Moves exactly `n` bytes from src (buffered bytes in `in` first) to dst. Bytes are also appended to `copy`
 // (if given) while it stays under copy_max; *copy_total counts all of them.
-static BOOL move_exact(SOCKET src, SOCKET dst, HBUF *in, unsigned long long n, HBUF *copy, size_t copy_max, unsigned long long *copy_total)
+static BOOL move_exact(PBIO *src, PBIO *dst, HBUF *in, unsigned long long n, HBUF *copy, size_t copy_max, unsigned long long *copy_total)
 {
     while (n > 0)
     {
@@ -673,7 +739,7 @@ static BOOL move_exact(SOCKET src, SOCKET dst, HBUF *in, unsigned long long n, H
             if (r <= 0) return FALSE;
         }
         size_t k = in->len < n ? in->len : (size_t)n;
-        if (send_all(dst, in->p, (int)k) == SOCKET_ERROR) return FALSE;
+        if (dst->write(dst, in->p, (int)k) != 0) return FALSE;
         if (copy && copy->len < copy_max) hb_append(copy, in->p, (copy_max - copy->len) < k ? (copy_max - copy->len) : k);
         if (copy_total) *copy_total += k;
         hb_consume(in, k);
@@ -683,7 +749,7 @@ static BOOL move_exact(SOCKET src, SOCKET dst, HBUF *in, unsigned long long n, H
 }
 
 // Reads one CRLF-terminated line into `in` (not consumed). Returns its length including CRLF, or -1.
-static long need_line(SOCKET src, HBUF *in)
+static long need_line(PBIO *src, HBUF *in)
 {
     for (;;)
     {
@@ -695,7 +761,7 @@ static long need_line(SOCKET src, HBUF *in)
 }
 
 // Moves a chunked body (chunks, last chunk, trailers) verbatim.
-static BOOL move_chunked(SOCKET src, SOCKET dst, HBUF *in, HBUF *copy, size_t copy_max, unsigned long long *copy_total)
+static BOOL move_chunked(PBIO *src, PBIO *dst, HBUF *in, HBUF *copy, size_t copy_max, unsigned long long *copy_total)
 {
     for (;;)
     {
@@ -723,13 +789,13 @@ static BOOL move_chunked(SOCKET src, SOCKET dst, HBUF *in, HBUF *copy, size_t co
 }
 
 // Everything until src closes.
-static BOOL move_until_close(SOCKET src, SOCKET dst, HBUF *in, HBUF *copy, size_t copy_max, unsigned long long *copy_total)
+static BOOL move_until_close(PBIO *src, PBIO *dst, HBUF *in, HBUF *copy, size_t copy_max, unsigned long long *copy_total)
 {
     for (;;)
     {
         if (in->len > 0)
         {
-            if (send_all(dst, in->p, (int)in->len) == SOCKET_ERROR) return FALSE;
+            if (dst->write(dst, in->p, (int)in->len) != 0) return FALSE;
             if (copy && copy->len < copy_max) hb_append(copy, in->p, (copy_max - copy->len) < in->len ? (copy_max - copy->len) : in->len);
             if (copy_total) *copy_total += in->len;
             in->len = 0;
@@ -753,25 +819,34 @@ static BOOL is_http_method_prefix(const char *p, size_t n, BOOL *complete)
     return FALSE;
 }
 
-// Hands both sockets to the normal relay after flushing whatever has been buffered from each side.
-static void hand_off(SOCKET client, SOCKET proxy, HBUF *from_client, HBUF *from_proxy, const FLOW_META *meta)
+// Flushes whatever was buffered from each side, then hands the two streams on: raw streams go to the fast IOCP relay;
+// TLS streams are pumped here as plaintext (re-encrypted per write). Destroys both PBIOs.
+static void hand_off(PBIO *client, PBIO *proxy, HBUF *from_client, HBUF *from_proxy, const FLOW_META *meta)
 {
     BOOL ok = TRUE;
-    if (from_client && from_client->len > 0) ok = send_all(proxy, from_client->p, (int)from_client->len) != SOCKET_ERROR;
-    if (ok && from_proxy && from_proxy->len > 0) ok = send_all(client, from_proxy->p, (int)from_proxy->len) != SOCKET_ERROR;
-    if (!ok) { closesocket(client); closesocket(proxy); return; }
-    DWORD zero = 0;
-    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, (char *)&zero, sizeof(zero));
-    setsockopt(proxy, SOL_SOCKET, SO_SNDTIMEO, (char *)&zero, sizeof(zero));
-    relay_or_block(client, proxy, meta);
+    if (from_client && from_client->len > 0) ok = proxy->write(proxy, from_client->p, (int)from_client->len) == 0;
+    if (ok && from_proxy && from_proxy->len > 0) ok = client->write(client, from_proxy->p, (int)from_proxy->len) == 0;
+    if (!ok) { client->destroy(client, FALSE); proxy->destroy(proxy, FALSE); return; }
+    if (!client->is_tls && !proxy->is_tls)
+    {
+        SOCKET cs = pbio_release_socket(client), ps = pbio_release_socket(proxy);
+        client->destroy(client, FALSE); proxy->destroy(proxy, FALSE);
+        DWORD zero = 0;
+        setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, (char *)&zero, sizeof(zero));
+        setsockopt(ps, SOL_SOCKET, SO_SNDTIMEO, (char *)&zero, sizeof(zero));
+        relay_or_block(cs, ps, meta);
+    }
+    else
+    {
+        pbio_pump(client, proxy);
+        client->destroy(client, TRUE); proxy->destroy(proxy, TRUE);
+    }
 }
 
-static void close_both(SOCKET client, SOCKET proxy)
+static void close_both(PBIO *client, PBIO *proxy)
 {
-    shutdown(client, SD_SEND);
-    shutdown(proxy, SD_SEND);
-    closesocket(client);
-    closesocket(proxy);
+    client->destroy(client, TRUE);
+    proxy->destroy(proxy, TRUE);
 }
 
 // ============================================================================================
@@ -891,39 +966,13 @@ static void log_response(const HSESS *s, const char *status_line, size_t sl_len,
     reqlog_write(line, strlen(line));
 }
 
-void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta)
+// Runs the request/response engine over two plaintext streams (raw sockets or decrypted TLS). Owns both PBIOs.
+// `cin_init`, if given, holds bytes already read from the application (the start of its first request); it is moved in.
+static void run_http(PBIO *client, PBIO *proxy, const FLOW_META *meta, HBUF *cin_init)
 {
     HSESS s; ZeroMemory(&s, sizeof(s));
-    HBUF cin = {0}, pin = {0};               // bytes read from the application / from the proxy, not yet forwarded
-
-    DWORD snd = 30000;                       // a stuck peer must not hold this thread forever
-    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
-    setsockopt(proxy, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
-
-    // Who speaks first? Only an application that opens with an HTTP request line is handled here.
-    int w = wait_readable(client, proxy, HTTP_IDLE_KEEPALIVE_MS);
-    if (w <= 0) { hand_off(client, proxy, NULL, NULL, meta); return; }
-    if (w & 2)
-    {
-        if (g_req_log_enabled) { sess_describe(&s, meta); reqlog_non_http(&s, NULL, 0, TRUE); }
-        hand_off(client, proxy, NULL, NULL, meta);
-        return;
-    }
-    for (;;)
-    {
-        int n = fill(client, &cin, 5000);
-        if (n <= 0) break;
-        BOOL complete = FALSE;
-        if (!is_http_method_prefix(cin.p, cin.len, &complete) || complete) break;
-    }
-    BOOL complete = FALSE;
-    if (cin.len == 0 || !is_http_method_prefix(cin.p, cin.len, &complete) || !complete)
-    {
-        if (g_req_log_enabled && cin.len > 0) { sess_describe(&s, meta); reqlog_non_http(&s, cin.p, cin.len, FALSE); }
-        hand_off(client, proxy, &cin, NULL, meta);
-        hb_free(&cin);
-        return;
-    }
+    HBUF cin = {0}, pin = {0};               // plaintext read from the application / from the proxy, not yet forwarded
+    if (cin_init && cin_init->len) { cin = *cin_init; cin_init->p = NULL; cin_init->len = cin_init->cap = 0; }
 
     sess_describe(&s, meta);
     BOOL first = TRUE;
@@ -990,7 +1039,7 @@ void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta)
                 request_url(head, (size_t)hl, &rl, &s, url, sizeof(url));
                 log_message("[CACHE] HIT %s %s (%zu bytes) for %s", rl.method, url, cbl, s.proc);
                 hb_consume(&cin, (size_t)hl);
-                ok = ok && send_all(client, out.p, (int)out.len) != SOCKET_ERROR;
+                ok = ok && client->write(client, out.p, (int)out.len) == 0;
                 hb_free(&out); free(ch); free(cb);
                 if (!ok || req_close) break;
                 continue;
@@ -998,7 +1047,7 @@ void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta)
         }
 
         // Forward the head, then stream the body (a copy goes to the log).
-        if (send_all(proxy, head, (int)hl) == SOCKET_ERROR) break;
+        if (proxy->write(proxy, head, (int)hl) != 0) break;
         HBUF reqhead = {0};
         if (g_req_log_enabled) hb_append(&reqhead, head, (size_t)hl);
         hb_consume(&cin, (size_t)hl);
@@ -1022,7 +1071,7 @@ void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta)
             status = atoi(pin.p + 9);
             if (status >= 100 && status < 200 && status != 101)
             {
-                if (send_all(client, pin.p, (int)rhl) == SOCKET_ERROR) { rhl = -1; break; }
+                if (client->write(client, pin.p, (int)rhl) != 0) { rhl = -1; break; }
                 hb_consume(&pin, (size_t)rhl);
                 continue;                                    // interim response: the final one follows
             }
@@ -1058,7 +1107,7 @@ void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta)
         size_t sk = sl_len < sizeof(statusline) - 1 ? sl_len : sizeof(statusline) - 1;
         memcpy(statusline, rh, sk); statusline[sk] = '\0';
 
-        if (send_all(client, rh, (int)rhl) == SOCKET_ERROR) { free(cache_head); break; }
+        if (client->write(client, rh, (int)rhl) != 0) { free(cache_head); break; }
         hb_consume(&pin, (size_t)rhl);
 
         HBUF rbody = {0}; unsigned long long rtotal = 0;
@@ -1084,6 +1133,99 @@ void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta)
     close_both(client, proxy);
 done:
     hb_free(&cin); hb_free(&pin);
+}
+
+// Reads the first bytes the application sends on a raw socket (no PBIO yet), then either intercepts TLS (HTTPS),
+// runs the plain-HTTP engine, or hands the connection to the relay unchanged. Takes ownership of both sockets.
+static int raw_wait_two(SOCKET a, SOCKET b, DWORD idle_ms)   // 1=a, 2=b, 3=both, 0=timeout, -1=stop/error
+{
+    ULONGLONG start = GetTickCount64();
+    while (running)
+    {
+        fd_set rf; FD_ZERO(&rf); FD_SET(a, &rf); if (b != INVALID_SOCKET) FD_SET(b, &rf);
+        struct timeval tv = { 1, 0 };
+        int r = select(0, &rf, NULL, NULL, &tv);
+        if (r == SOCKET_ERROR) return -1;
+        if (r > 0) return (FD_ISSET(a, &rf) ? 1 : 0) | ((b != INVALID_SOCKET && FD_ISSET(b, &rf)) ? 2 : 0);
+        if (GetTickCount64() - start >= idle_ms) return 0;
+    }
+    return -1;
+}
+
+void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta)
+{
+    DWORD snd = 30000;                       // a stuck peer must not hold this thread forever
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
+    setsockopt(proxy, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
+
+    // Who speaks first? Only an application that opens the connection is inspected.
+    int w = raw_wait_two(client, proxy, HTTP_IDLE_KEEPALIVE_MS);
+    if (w <= 0) { relay_or_block(client, proxy, meta); return; }
+    if (w & 2)
+    {
+        if (g_req_log_enabled) { HSESS s; sess_describe(&s, meta); reqlog_non_http(&s, NULL, 0, TRUE); }
+        relay_or_block(client, proxy, meta);
+        return;
+    }
+
+    // Peek the application's opening bytes to classify the connection (HTTP / TLS / other).
+    HBUF cin = {0};
+    for (;;)
+    {
+        if (raw_wait_two(client, INVALID_SOCKET, 5000) != 1) break;
+        if (!hb_reserve(&cin, HTTP_IO_CHUNK)) break;
+        int n = recv(client, cin.p + cin.len, HTTP_IO_CHUNK, 0);
+        if (n <= 0) break;
+        cin.len += (size_t)n;
+        if (cin.len >= 3 && (unsigned char)cin.p[0] == 0x16 && (unsigned char)cin.p[1] == 0x03) break;   // TLS record
+        BOOL complete = FALSE;
+        if (!is_http_method_prefix(cin.p, cin.len, &complete) || complete) break;
+    }
+
+    BOOL is_tls = cin.len >= 3 && (unsigned char)cin.p[0] == 0x16 && (unsigned char)cin.p[1] == 0x03;
+
+    // HTTPS interception: terminate the app's TLS with a minted cert, open our own TLS to the origin.
+    if (is_tls && g_https_intercept_enabled)
+    {
+        char sni[256];
+        if (!tls_sni((const unsigned char *)cin.p, cin.len, sni, sizeof(sni)))
+        {
+            sni[0] = '\0';                   // no SNI: fall back to the destination domain, else leave empty (cert CN = IP)
+            if (meta->v6) dns_cache_lookup_v6(meta->dest, sni, sizeof(sni));
+            else { UINT32 v4; memcpy(&v4, meta->dest, 4); dns_cache_lookup(v4, sni, sizeof(sni)); }
+        }
+        PBIO *cio = pb_tls_accept(client, sni, cin.p, (int)cin.len);   // consumes `client` and the ClientHello
+        hb_free(&cin);
+        if (cio == NULL) { closesocket(proxy); return; }
+        PBIO *pio = pb_tls_connect(proxy, sni);
+        if (pio == NULL) { cio->destroy(cio, TRUE); return; }
+        run_http(cio, pio, meta, NULL);
+        return;
+    }
+
+    // Not interceptable HTTP: log what can be seen (TLS SNI, or a hex dump) and relay the raw stream unchanged.
+    BOOL complete = FALSE;
+    if (is_tls || cin.len == 0 || !is_http_method_prefix(cin.p, cin.len, &complete) || !complete)
+    {
+        if (g_req_log_enabled && cin.len > 0) { HSESS s; sess_describe(&s, meta); reqlog_non_http(&s, cin.p, cin.len, FALSE); }
+        if (cin.len > 0 && send_all(proxy, cin.p, (int)cin.len) == SOCKET_ERROR) { hb_free(&cin); closesocket(client); closesocket(proxy); return; }
+        hb_free(&cin);
+        relay_or_block(client, proxy, meta);
+        return;
+    }
+
+    // Plain HTTP: run the engine over raw-socket PBIOs (fast IOCP relay still available for hand-off).
+    PBIO *cio = pbio_socket(client);
+    PBIO *pio = cio ? pbio_socket(proxy) : NULL;
+    if (cio == NULL || pio == NULL)
+    {
+        if (cio) cio->destroy(cio, FALSE); else closesocket(client);
+        if (pio) pio->destroy(pio, FALSE); else closesocket(proxy);
+        hb_free(&cin);
+        return;
+    }
+    run_http(cio, pio, meta, &cin);
+    hb_free(&cin);
 }
 
 // ============================================================================================
@@ -1137,4 +1279,30 @@ PROXYBRIDGE_API BOOL ProxyBridge_GetRequestLogPath(char *buffer, size_t size)
     int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, buffer, (int)(size > 0x7fffffff ? 0x7fffffff : size), NULL, NULL);
     if (n <= 0) { buffer[0] = '\0'; return FALSE; }
     return TRUE;
+}
+
+PROXYBRIDGE_API void ProxyBridge_SetHttpsInterceptEnabled(BOOL enable)
+{
+    BOOL was = g_https_intercept_enabled;
+    if (enable && !pb_tls_ensure_ca())
+    {
+        g_https_intercept_enabled = FALSE;
+        log_message("HTTPS interception: could not set up the ProxyBridge CA; proxied HTTPS stays encrypted");
+        return;
+    }
+    g_https_intercept_enabled = enable ? TRUE : FALSE;
+    if (was != g_https_intercept_enabled)
+        log_message(enable ? "HTTPS interception on: proxied HTTPS is decrypted for the cache / request log (applications must trust the ProxyBridge CA)"
+                           : "HTTPS interception off: proxied HTTPS passes through encrypted");
+}
+
+PROXYBRIDGE_API int ProxyBridge_InstallTlsCertificate(void)
+{
+    return pb_tls_install_ca();
+}
+
+PROXYBRIDGE_API BOOL ProxyBridge_GetTlsCertificatePath(char *buffer, size_t size)
+{
+    if (pb_tls_ensure_ca()) pb_tls_ensure_exported();
+    return pb_tls_ca_cert_path(buffer, size);
 }

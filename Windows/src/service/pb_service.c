@@ -176,6 +176,8 @@ static BOOL Dispatch(const BYTE *req, DWORD reqLen, PbW *resp)
     case PBOP_SET_RESP_CACHE:   { UINT32 v = PbR_U32(&r); if (!r.ok) return FALSE; g_api.SetResponseCacheEnabled(v != 0); break; }
     case PBOP_CLEAR_RESP_CACHE: g_api.ClearResponseCache(); break;
     case PBOP_SET_REQ_LOG:      { UINT32 v = PbR_U32(&r); if (!r.ok) return FALSE; g_api.SetRequestLoggingEnabled(v != 0); break; }
+    case PBOP_SET_HTTPS_INTERCEPT: { UINT32 v = PbR_U32(&r); if (!r.ok) return FALSE; g_api.SetHttpsInterceptEnabled(v != 0); break; }
+    case PBOP_INSTALL_TLS_CERT: ret = (UINT32)(INT32)(g_api.InstallTlsCertificate ? g_api.InstallTlsCertificate() : -1); break;
     case PBOP_GET_FLOWS: {
         UINT32 max = PbR_U32(&r);
         if (!r.ok) return FALSE;

@@ -283,6 +283,7 @@ void PB_ProfileDefaults(PBProfile* p, const wchar_t* name)
     p->logEveryConnection = 0;
     p->responseCache     = 0;
     p->requestLogging    = 0;
+    p->httpsIntercept    = 0;
     p->closeToTray       = 1;
     p->fontZoom          = 100;
     lstrcpynW(p->language, L"en", 8);
@@ -330,6 +331,7 @@ void PB_ProfileLoad(const wchar_t* name, PBProfile* p)
         p->logEveryConnection = json_bool(root, "LogEveryConnection", 0);
         p->responseCache     = json_bool(root, "ResponseCache", 0);
         p->requestLogging    = json_bool(root, "RequestLogging", 0);
+        p->httpsIntercept    = json_bool(root, "HttpsIntercept", 0);
         p->closeToTray       = json_bool(root, "CloseToTray", 1);
         p->nextCfgId         = (UINT32)json_long(root, "NextProxyConfigId", 0);
         p->fontZoom          = (int)json_long(root, "FontZoom", 100);
@@ -426,6 +428,7 @@ BOOL PB_ProfileSave(const wchar_t* name, const PBProfile* p)
     sb_put(&b, "  \"LogEveryConnection\": ");      sb_put(&b, p->logEveryConnection ? "true" : "false");   sb_put(&b, ",\n");
     sb_put(&b, "  \"ResponseCache\": ");           sb_put(&b, p->responseCache ? "true" : "false");        sb_put(&b, ",\n");
     sb_put(&b, "  \"RequestLogging\": ");          sb_put(&b, p->requestLogging ? "true" : "false");       sb_put(&b, ",\n");
+    sb_put(&b, "  \"HttpsIntercept\": ");          sb_put(&b, p->httpsIntercept ? "true" : "false");       sb_put(&b, ",\n");
     put_kv_str(&b, "  ", "Language", p->language, ",\n");
     sb_put(&b, "  \"CloseToTray\": ");              sb_put(&b, p->closeToTray ? "true" : "false");       sb_put(&b, ",\n");
     { char zb[48]; _snprintf_s(zb, sizeof(zb), _TRUNCATE, "  \"FontZoom\": %d,\n", p->fontZoom); sb_put(&b, zb); }

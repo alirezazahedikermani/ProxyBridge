@@ -18,6 +18,8 @@ static BOOL g_lastCacheArg = FALSE, g_lastReqLogArg = FALSE;
 static void StubSetCache(BOOL v)   { g_cacheCalls++;  g_lastCacheArg = v; }
 static void StubClearCache(void)   { g_cacheClears++; }
 static void StubSetReqLog(BOOL v)  { g_reqLogCalls++; g_lastReqLogArg = v; }
+static void StubSetHttps(BOOL v)   { (void)v; }
+static int  StubInstallCert(void)  { return 0; }
 static void StubSetLog(PBLogCallback cb) { (void)cb; }
 static void StubSetConn(PBConnectionCallback cb) { (void)cb; }
 
@@ -62,6 +64,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     g_api.SetEnabled = StubSetEnabled; g_api.SetTrafficLoggingEnabled = StubSetTraffic; g_api.SetLogEveryConnection = StubSetLogAll;
     g_api.SetLogCallback = StubSetLog; g_api.SetConnectionCallback = StubSetConn;
     g_api.SetResponseCacheEnabled = StubSetCache; g_api.ClearResponseCache = StubClearCache; g_api.SetRequestLoggingEnabled = StubSetReqLog;
+    g_api.SetHttpsInterceptEnabled = StubSetHttps; g_api.InstallTlsCertificate = StubInstallCert;
 
     CreateDarkBrushes();
     WNDCLASSEXW wc; ZeroMemory(&wc, sizeof(wc));
@@ -140,6 +143,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     CHECK(!MenuChecked(g_hMain, IDM_SET_RESPCACHE) && !MenuChecked(g_hMain, IDM_SET_REQLOG));
     PB_ProfileLoad(g_activeProfile, &g_probe);
     CHECK(g_probe.responseCache == 0 && g_probe.requestLogging == 0);
+
+    /* 5c. Decrypt HTTPS / Install Certificate: items exist, HTTPS off by default (toggling on would pop a modal, not driven here) */
+    CHECK(MenuExists(g_hMain, IDM_SET_HTTPS) && MenuExists(g_hMain, IDM_TLS_INSTALL));
+    CHECK(!MenuChecked(g_hMain, IDM_SET_HTTPS) && g_httpsIntercept == FALSE && g_profile.httpsIntercept == 0);
 
     /* 6. Live Connections tab */
     g_api.GetFlows = StubGetFlows;

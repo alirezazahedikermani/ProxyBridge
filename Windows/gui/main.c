@@ -135,6 +135,7 @@ static BOOL      g_startup = FALSE;   // "Run at Startup" (schtasks logon task)
 static BOOL      g_logEvery = FALSE;   // log every new connection (no de-duplication); saved per profile
 static BOOL      g_respCache = FALSE;  // cache plain-HTTP responses; saved per profile
 static BOOL      g_reqLog = FALSE;     // log every request in full to the request log file; saved per profile
+static BOOL      g_httpsIntercept = FALSE;  // decrypt proxied HTTPS (MITM); saved per profile
 static BOOL      g_autoClear = TRUE;  // auto-clear logs past a line threshold to save memory
 #define AUTO_CLEAR_LINES 500
 static PBFilter  g_flt[PB_MAX_FILTER];  // connection-log filter snapshot (read by native cb)
@@ -331,12 +332,14 @@ static void SwitchToProfile(const wchar_t* name)
     g_logEvery = g_profile.logEveryConnection != 0;
     g_respCache = g_profile.responseCache != 0;
     g_reqLog = g_profile.requestLogging != 0;
+    g_httpsIntercept = g_profile.httpsIntercept != 0;
     if (g_profile.fontZoom != g_zoom) { g_zoom = g_profile.fontZoom; ApplyZoom(g_hMain); }
     ApplyFilterSnapshot();
     g_api.SetTrafficLoggingEnabled(g_trafficLog);
     g_api.SetLogEveryConnection(g_logEvery);
     g_api.SetResponseCacheEnabled(g_respCache);
     g_api.SetRequestLoggingEnabled(g_reqLog);
+    g_api.SetHttpsInterceptEnabled(g_httpsIntercept);
     ApplyConfigs();
     ApplyRules();
     SyncMenuChecks(g_hMain);
@@ -401,6 +404,8 @@ static void BuildMainMenu(HWND hwnd)
     AppendMenuW(settings, MF_STRING, IDM_RESPCACHE_CLEAR, T(S_M_RESPCACHE_CLEAR));
     AppendMenuW(settings, MF_STRING, IDM_SET_REQLOG,      T(S_M_REQLOG));
     AppendMenuW(settings, MF_STRING, IDM_REQLOG_OPEN,     T(S_M_REQLOG_OPEN));
+    AppendMenuW(settings, MF_STRING, IDM_SET_HTTPS,       T(S_M_HTTPS));
+    AppendMenuW(settings, MF_STRING, IDM_TLS_INSTALL,     T(S_M_TLS_INSTALL));
     AppendMenuW(settings, MF_SEPARATOR, 0, NULL);
     AppendMenuW(settings, MF_STRING, IDM_ZOOM_IN,    T(S_M_ZOOM_IN));
     AppendMenuW(settings, MF_STRING, IDM_ZOOM_OUT,   T(S_M_ZOOM_OUT));
@@ -622,6 +627,8 @@ static void SyncMenuChecks(HWND hwnd)
     CheckMenuItem(m, IDM_SET_LOGALL,      MF_BYCOMMAND | (g_logEvery   ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(m, IDM_SET_RESPCACHE,   MF_BYCOMMAND | (g_respCache  ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(m, IDM_SET_REQLOG,      MF_BYCOMMAND | (g_reqLog     ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(m, IDM_SET_HTTPS,       MF_BYCOMMAND | (g_httpsIntercept ? MF_CHECKED : MF_UNCHECKED));
+    EnableMenuItem(m, IDM_TLS_INSTALL,    MF_BYCOMMAND | MF_ENABLED);
     EnableMenuItem(m, IDM_RESPCACHE_CLEAR, MF_BYCOMMAND | (g_respCache ? MF_ENABLED : MF_GRAYED));
     int zh = (_wcsicmp(g_profile.language, L"zh") == 0);
     CheckMenuItem(m, IDM_LANG_EN, MF_BYCOMMAND | (zh ? MF_UNCHECKED : MF_CHECKED));
@@ -993,6 +1000,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_api.SetRequestLoggingEnabled(g_reqLog); SaveActive(); SyncMenuChecks(hwnd); return 0;
         case IDM_REQLOG_OPEN:
             OpenRequestLog(hwnd); return 0;
+        case IDM_SET_HTTPS:
+            if (!g_httpsIntercept)   // turning on: confirm first (it is a man-in-the-middle of secure traffic)
+            {
+                if (MessageBoxW(hwnd, T(S_HTTPS_WARN), APP_TITLE, MB_YESNO | MB_ICONWARNING) != IDYES) return 0;
+            }
+            g_httpsIntercept = !g_httpsIntercept; g_profile.httpsIntercept = g_httpsIntercept;
+            g_api.SetHttpsInterceptEnabled(g_httpsIntercept); SaveActive(); SyncMenuChecks(hwnd); return 0;
+        case IDM_TLS_INSTALL:
+        {
+            int rc = g_api.InstallTlsCertificate ? g_api.InstallTlsCertificate() : -1;
+            MessageBoxW(hwnd, rc == 0 ? T(S_TLS_INSTALLED) : T(S_TLS_INSTALL_FAIL),
+                        APP_TITLE, MB_OK | (rc == 0 ? MB_ICONINFORMATION : MB_ICONWARNING));
+            return 0;
+        }
         case IDM_SET_AUTOCLEAR:
             g_autoClear = !g_autoClear; g_profile.autoClearLogs = g_autoClear;
             SaveActive(); SyncMenuChecks(hwnd); return 0;
@@ -1218,6 +1239,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     g_logEvery    = g_profile.logEveryConnection != 0;
     g_respCache   = g_profile.responseCache != 0;
     g_reqLog      = g_profile.requestLogging != 0;
+    g_httpsIntercept = g_profile.httpsIntercept != 0;
     g_startup     = StartupIsEnabled();
     ApplyFilterSnapshot();
 
@@ -1279,6 +1301,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     g_api.SetLogEveryConnection(g_logEvery);
     g_api.SetResponseCacheEnabled(g_respCache);
     g_api.SetRequestLoggingEnabled(g_reqLog);
+    g_api.SetHttpsInterceptEnabled(g_httpsIntercept);
     g_api.SetEnabled(g_proxyEnabled);
     g_api.SetLogCallback(PBLogCb);
     g_api.SetConnectionCallback(PBConnCb);

@@ -36,6 +36,7 @@ typedef void (*pfnSetConnectionCallback)(void (*cb)(const char*, DWORD,
 typedef void (*pfnSetTrafficLogging)(int enable);
 typedef void (*pfnSetFlag)(int enable);
 typedef int  (*pfnGetRequestLogPath)(char* buffer, size_t size);
+typedef int  (*pfnInstallCert)(void);
 typedef int  (*pfnStart)(void);
 typedef int  (*pfnStop)(void);
 
@@ -48,6 +49,9 @@ static pfnSetTrafficLogging     g_SetTraffic     = NULL;
 static pfnSetFlag               g_SetRespCache   = NULL;
 static pfnSetFlag               g_SetReqLog      = NULL;
 static pfnGetRequestLogPath     g_GetReqLogPath  = NULL;
+static pfnSetFlag               g_SetHttps       = NULL;
+static pfnInstallCert           g_InstallCert    = NULL;
+static pfnGetRequestLogPath     g_GetCertPath    = NULL;
 static pfnStart                 g_Start          = NULL;
 static pfnStop                  g_Stop           = NULL;
 static HMODULE                  g_hDll           = NULL;
@@ -80,6 +84,7 @@ typedef struct {
     int         traffic_logging;
     int         response_cache;    // "ResponseCache": cache plain-HTTP responses
     int         request_logging;   // "RequestLogging": write every request in full to the request log file
+    int         https_intercept;   // "HttpsIntercept": decrypt proxied HTTPS (MITM)
     PBProxyConfig configs[MAX_PROXY_CONFIGS];
     int         num_configs;
     PBRule      rules[MAX_RULES];
@@ -227,10 +232,17 @@ static void show_help(const char* prog)
     printf("                       Write every request in full (head + body) to\n");
     printf("                       %%ProgramData%%\\ProxyBridge\\Logs\\requests.log (overrides the\n");
     printf("                       profile's \"RequestLogging\"; default off)\n\n");
+    printf("  --decrypt-https <on|off>\n");
+    printf("                       Decrypt proxied HTTPS (man-in-the-middle) so the cache and the\n");
+    printf("                       request log also cover it (overrides the profile's\n");
+    printf("                       \"HttpsIntercept\"; default off). Applications must trust the\n");
+    printf("                       ProxyBridge certificate - install it with --install-cert.\n\n");
     printf("  --version            Show version information\n");
     printf("  -?, -h, --help       Show this help\n\n");
     printf("Commands:\n");
-    printf("  --update             Check for updates and open releases page\n\n");
+    printf("  --update             Check for updates and open releases page\n");
+    printf("  --install-cert       Install the ProxyBridge HTTPS certificate in the machine\n");
+    printf("                       Trusted Root store (requires Administrator)\n\n");
     printf("Examples:\n");
     printf("  ProxyBridge_CLI.exe --profile C:\\Users\\user\\myconfig.pbprofile\n");
     printf("  ProxyBridge_CLI.exe --profile myconfig.pbprofile --verbose 2\n");
@@ -502,6 +514,7 @@ static bool load_profile(const char* path, PBProfile* prof)
     prof->traffic_logging     = jbool(json, "IsTrafficLoggingEnabled",  true)  ? 1 : 0;
     prof->response_cache      = jbool(json, "ResponseCache",            false) ? 1 : 0;
     prof->request_logging     = jbool(json, "RequestLogging",           false) ? 1 : 0;
+    prof->https_intercept     = jbool(json, "HttpsIntercept",           false) ? 1 : 0;
 
     // ── ProxyConfigs ──────────────────────────────────────────────────────────
     const char* arr = jarray(json, "ProxyConfigs");
@@ -641,6 +654,9 @@ static bool load_dll(void)
     LOAD_FN(pfnSetFlag,               g_SetRespCache,   "ProxyBridge_SetResponseCacheEnabled");
     LOAD_FN(pfnSetFlag,               g_SetReqLog,      "ProxyBridge_SetRequestLoggingEnabled");
     LOAD_FN(pfnGetRequestLogPath,     g_GetReqLogPath,  "ProxyBridge_GetRequestLogPath");
+    LOAD_FN(pfnSetFlag,               g_SetHttps,       "ProxyBridge_SetHttpsInterceptEnabled");
+    LOAD_FN(pfnInstallCert,           g_InstallCert,    "ProxyBridge_InstallTlsCertificate");
+    LOAD_FN(pfnGetRequestLogPath,     g_GetCertPath,    "ProxyBridge_GetTlsCertificatePath");
     LOAD_FN(pfnStart,                 g_Start,          "ProxyBridge_Start");
     LOAD_FN(pfnStop,                  g_Stop,           "ProxyBridge_Stop");
 
@@ -968,6 +984,8 @@ int main(int argc, char* argv[])
     bool do_upd       = false;
     int  opt_cache    = -1;      // -1 = as in the profile
     int  opt_reqlog   = -1;
+    int  opt_https    = -1;
+    bool do_install   = false;
     char profile_path[MAX_PATH] = {0};
 
     // No args: show full help
@@ -1006,15 +1024,20 @@ int main(int argc, char* argv[])
             }
             strncpy_s(profile_path, MAX_PATH, argv[++i], _TRUNCATE);
         }
-        else if (strcmp(argv[i], "--cache") == 0 || strcmp(argv[i], "--log-requests") == 0)
+        else if (strcmp(argv[i], "--cache") == 0 || strcmp(argv[i], "--log-requests") == 0 || strcmp(argv[i], "--decrypt-https") == 0)
         {
-            int* dst = (strcmp(argv[i], "--cache") == 0) ? &opt_cache : &opt_reqlog;
+            int* dst = (strcmp(argv[i], "--cache") == 0) ? &opt_cache
+                     : (strcmp(argv[i], "--log-requests") == 0) ? &opt_reqlog : &opt_https;
             if (i + 1 >= argc || (_stricmp(argv[i + 1], "on") != 0 && _stricmp(argv[i + 1], "off") != 0))
             {
                 fprintf(stderr, "ERROR: %s requires on or off.\n", argv[i]);
                 return 1;
             }
             *dst = _stricmp(argv[++i], "on") == 0 ? 1 : 0;
+        }
+        else if (strcmp(argv[i], "--install-cert") == 0)
+        {
+            do_install = true;
         }
         else if (strcmp(argv[i], "--verbose") == 0)
         {
@@ -1054,6 +1077,18 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    if (do_install)
+    {
+        printf("Installing ProxyBridge HTTPS certificate...\n");
+        if (!load_dll()) return 1;
+        int rc = g_InstallCert();
+        char cp[MAX_PATH * 3] = {0};
+        g_GetCertPath(cp, sizeof(cp));
+        if (rc == 0) printf("  Installed in the machine Trusted Root store.\n  Certificate: %s\n\n", cp);
+        else         fprintf(stderr, "  ERROR: could not install the certificate (code %d).\n\n", rc);
+        return rc == 0 ? 0 : 1;
+    }
+
     if (!profile_path[0])
     {
         fprintf(stderr, "ERROR: No profile specified.\n");
@@ -1088,9 +1123,12 @@ int main(int argc, char* argv[])
     g_SetTraffic(prof.traffic_logging);
     if (opt_cache  >= 0) prof.response_cache  = opt_cache;
     if (opt_reqlog >= 0) prof.request_logging = opt_reqlog;
+    if (opt_https >= 0) prof.https_intercept = opt_https;
     g_SetRespCache(prof.response_cache);
     g_SetReqLog(prof.request_logging);
+    g_SetHttps(prof.https_intercept);
     printf("  Response cache: %s\n", prof.response_cache ? "on (plain HTTP only)" : "off");
+    printf("  HTTPS decrypt : %s\n", prof.https_intercept ? "on (apps must trust the ProxyBridge cert; run --install-cert)" : "off");
     if (prof.request_logging)
     {
         char rlp[MAX_PATH * 3] = {0};

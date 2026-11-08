@@ -32,6 +32,8 @@
 #define IDM_RESPCACHE_CLEAR         229   // empty the response cache
 #define IDM_SET_REQLOG              232   // log every request in full to the request log file
 #define IDM_REQLOG_OPEN             233   // open the request log file
+#define IDM_SET_HTTPS               234   // decrypt proxied HTTPS (MITM)
+#define IDM_TLS_INSTALL             235   // install the ProxyBridge CA certificate
 #define IDM_PROFILE_RENAME          244
 
 // Log Filters (list) dialog

@@ -19,7 +19,7 @@
 #define PB_SERVICE_NAME  L"ProxyBridgeSvc"
 #define PB_PIPE_CTL      L"\\\\.\\pipe\\ProxyBridgeCtl"
 #define PB_PIPE_EVT      L"\\\\.\\pipe\\ProxyBridgeEvt"
-#define PB_PROTO_VERSION 7   // 7: response cache + request log toggles; 6: rule id per flow; 5: PBOP_GET_FLOWS (live connections); 4: PBOP_SET_LOG_ALL; 3: PBOP_SET_ENABLED (main switch); 2: per-rule localhost flag
+#define PB_PROTO_VERSION 8   // 8: HTTPS interception toggle + install CA cert; 7: response cache + request log toggles; 6: rule id per flow; 5: PBOP_GET_FLOWS (live connections); 4: PBOP_SET_LOG_ALL; 3: PBOP_SET_ENABLED (main switch); 2: per-rule localhost flag
 #define PB_MSG_MAX       (64u * 1024u)
 #define PB_STR_MAX       (32u * 1024u)
 #define PB_NULL_STR      0xFFFFFFFFu
@@ -47,7 +47,9 @@ enum {
                               //            proxyId, ruleId, ageMs (0xFFFFFFFF = unknown), sentLo, sentHi, recvLo, recvHi, str name, str host
     PBOP_SET_RESP_CACHE,      // bool -> 0   (1 = cache plain-HTTP responses; 0 also empties the cache)
     PBOP_CLEAR_RESP_CACHE,    // () -> 0
-    PBOP_SET_REQ_LOG          // bool -> 0   (1 = write every request in full to the request log file)
+    PBOP_SET_REQ_LOG,         // bool -> 0   (1 = write every request in full to the request log file)
+    PBOP_SET_HTTPS_INTERCEPT, // bool -> 0   (1 = decrypt proxied HTTPS so the cache / log cover it)
+    PBOP_INSTALL_TLS_CERT     // () -> int   (install the ProxyBridge CA in the machine Trusted Root store; 0 = ok, <0 = error)
 };
 #define PB_FLOW_ROW_MAX (12u * 4u + (4u + 39u) + (4u + 63u))   // largest encoded flow row, in bytes
 

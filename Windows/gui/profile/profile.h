@@ -59,6 +59,7 @@ typedef struct PBProfile {
     int      logEveryConnection;   // 1 = the Connections log shows every new connection, not just the first of identical ones
     int      responseCache;        // 1 = plain-HTTP responses are cached in memory and served from there
     int      requestLogging;       // 1 = every request is written in full to the request log file
+    int      httpsIntercept;       // 1 = proxied HTTPS is decrypted (MITM) so the cache / log cover it
     int      closeToTray;
     int      fontZoom;            // UI/log text zoom in percent (60-300), 100 = DPI default
     UINT32   nextCfgId;           // next stable proxy-config id to hand out (persisted; ids are never reused)

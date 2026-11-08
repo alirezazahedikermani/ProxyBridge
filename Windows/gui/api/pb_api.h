@@ -58,6 +58,8 @@ typedef void   (*PFN_ClearConnectionLogs)(void);
 typedef void   (*PFN_SetResponseCacheEnabled)(BOOL);
 typedef void   (*PFN_ClearResponseCache)(void);
 typedef void   (*PFN_SetRequestLoggingEnabled)(BOOL);
+typedef void   (*PFN_SetHttpsInterceptEnabled)(BOOL);
+typedef int    (*PFN_InstallTlsCertificate)(void);
 typedef UINT32 (*PFN_GetFlows)(PBFlow*, UINT32);
 typedef BOOL   (*PFN_Start)(void);
 typedef BOOL   (*PFN_Stop)(void);
@@ -86,6 +88,8 @@ typedef struct {
     PFN_SetResponseCacheEnabled   SetResponseCacheEnabled;
     PFN_ClearResponseCache        ClearResponseCache;
     PFN_SetRequestLoggingEnabled  SetRequestLoggingEnabled;
+    PFN_SetHttpsInterceptEnabled  SetHttpsInterceptEnabled;
+    PFN_InstallTlsCertificate     InstallTlsCertificate;
     PFN_GetFlows                  GetFlows;
     PFN_Start                     Start;
     PFN_Stop                      Stop;
@@ -136,6 +140,8 @@ static BOOL PB_LoadDirect(PBApi* api)
     PB_BIND(SetResponseCacheEnabled,  "SetResponseCacheEnabled");
     PB_BIND(ClearResponseCache,       "ClearResponseCache");
     PB_BIND(SetRequestLoggingEnabled, "SetRequestLoggingEnabled");
+    PB_BIND(SetHttpsInterceptEnabled, "SetHttpsInterceptEnabled");
+    PB_BIND(InstallTlsCertificate,    "InstallTlsCertificate");
     PB_BIND(GetFlows,                 "GetFlows");
     PB_BIND(Start,                    "Start");
     PB_BIND(Stop,                     "Stop");

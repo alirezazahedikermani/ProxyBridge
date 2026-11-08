@@ -60,7 +60,7 @@ int main(void)
     CHECK(wcscmp(g.rule[2].hosts, L"*") == 0);
     CHECK(g.rule[0].localhost == 1 && g.rule[1].localhost == 1);                      /* the old global value became each rule's default */
     CHECK(g.logEveryConnection == 0);                                                /* a setting the old file does not have: off */
-    CHECK(g.responseCache == 0 && g.requestLogging == 0);                            /* same for the response cache / request log */
+    CHECK(g.responseCache == 0 && g.requestLogging == 0 && g.httpsIntercept == 0);    /* new toggles default off */
 
     /* 2. saving writes the two keys other ProxyBridge apps read; a domain typed with the IPs lands in TargetDomains */
     CHECK(PB_ProfileSave(L"new", &g));
@@ -78,7 +78,7 @@ int main(void)
 
     /* 3. per-rule localhost and Log Every Connection round-trip */
     memset(&g, 0, sizeof g);
-    g.ruleCount = 2; g.logEveryConnection = 1; g.responseCache = 1; g.requestLogging = 0;
+    g.ruleCount = 2; g.logEveryConnection = 1; g.responseCache = 1; g.requestLogging = 0; g.httpsIntercept = 1;
     for (int i = 0; i < 2; i++)
     {
         PBRule* r = &g.rule[i];
@@ -88,7 +88,7 @@ int main(void)
     CHECK(PB_ProfileSave(L"flags", &g));
     PB_ProfileLoad(L"flags", &h);
     CHECK(h.ruleCount == 2 && h.rule[0].localhost == 0 && h.rule[1].localhost == 1 && h.logEveryConnection == 1);
-    CHECK(h.responseCache == 1 && h.requestLogging == 0);                               /* response cache / request log toggles */
+    CHECK(h.responseCache == 1 && h.requestLogging == 0 && h.httpsIntercept == 1);       /* cache / request log / HTTPS toggles */
 
     /* 4. a long list (about 8000 characters) survives save + load without truncation */
     memset(&g, 0, sizeof g); g.ruleCount = 1;
