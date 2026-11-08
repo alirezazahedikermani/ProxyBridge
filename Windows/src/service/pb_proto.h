@@ -19,7 +19,7 @@
 #define PB_SERVICE_NAME  L"ProxyBridgeSvc"
 #define PB_PIPE_CTL      L"\\\\.\\pipe\\ProxyBridgeCtl"
 #define PB_PIPE_EVT      L"\\\\.\\pipe\\ProxyBridgeEvt"
-#define PB_PROTO_VERSION 6   // 6: rule id per flow; 5: PBOP_GET_FLOWS (live connections); 4: PBOP_SET_LOG_ALL; 3: PBOP_SET_ENABLED (main switch); 2: per-rule localhost flag
+#define PB_PROTO_VERSION 7   // 7: response cache + request log toggles; 6: rule id per flow; 5: PBOP_GET_FLOWS (live connections); 4: PBOP_SET_LOG_ALL; 3: PBOP_SET_ENABLED (main switch); 2: per-rule localhost flag
 #define PB_MSG_MAX       (64u * 1024u)
 #define PB_STR_MAX       (32u * 1024u)
 #define PB_NULL_STR      0xFFFFFFFFu
@@ -43,8 +43,11 @@ enum {
     PBOP_STOP,                // () -> bool
     PBOP_SET_ENABLED,         // bool -> 0   (main switch: 0 pauses all rules for new connections)
     PBOP_SET_LOG_ALL,         // bool -> 0   (1 = log every new connection, no de-duplication)
-    PBOP_GET_FLOWS            // u32 max -> u32 count, then per flow: u32 idLo, idHi, pid, flags (1 = UDP, 2 = IPv6), port,
+    PBOP_GET_FLOWS,           // u32 max -> u32 count, then per flow: u32 idLo, idHi, pid, flags (1 = UDP, 2 = IPv6), port,
                               //            proxyId, ruleId, ageMs (0xFFFFFFFF = unknown), sentLo, sentHi, recvLo, recvHi, str name, str host
+    PBOP_SET_RESP_CACHE,      // bool -> 0   (1 = cache plain-HTTP responses; 0 also empties the cache)
+    PBOP_CLEAR_RESP_CACHE,    // () -> 0
+    PBOP_SET_REQ_LOG          // bool -> 0   (1 = write every request in full to the request log file)
 };
 #define PB_FLOW_ROW_MAX (12u * 4u + (4u + 39u) + (4u + 63u))   // largest encoded flow row, in bytes
 

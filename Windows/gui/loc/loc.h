@@ -41,6 +41,7 @@ enum {
     S_UPD_DONTASK, S_UPD_LATEST, S_UPD_ERR, S_UPD_DLING, S_UPD_DLFAIL,
     S_L_NAME, S_COL_NAME, S_CHK_SENDDOMAIN,
     S_M_ZOOM_IN, S_M_ZOOM_OUT, S_M_ZOOM_RESET,
+    S_M_RESPCACHE, S_M_RESPCACHE_CLEAR, S_M_REQLOG, S_M_REQLOG_OPEN, S_REQLOG_NOFILE, S_RESPCACHE_CLEARED,
     S_COUNT
 };
 
@@ -226,6 +227,13 @@ static const wchar_t* const g_strings[S_COUNT][2] = {
     /* S_M_ZOOM_IN         */ { L"Increase Text Size	Ctrl++", L"放大文字	Ctrl++" },
     /* S_M_ZOOM_OUT        */ { L"Decrease Text Size	Ctrl+-", L"缩小文字	Ctrl+-" },
     /* S_M_ZOOM_RESET      */ { L"Reset Text Size	Ctrl+0", L"重置文字大小	Ctrl+0" },
+    /* S_M_RESPCACHE       */ { L"Cache HTTP Responses", L"缓存 HTTP 响应" },
+    /* S_M_RESPCACHE_CLEAR */ { L"Clear Response Cache", L"清除响应缓存" },
+    /* S_M_REQLOG          */ { L"Log Full Requests", L"完整记录请求" },
+    /* S_M_REQLOG_OPEN     */ { L"Open Request Log", L"打开请求日志" },
+    /* S_REQLOG_NOFILE     */ { L"The request log is empty. Turn on Settings > Log Full Requests and make some requests first.",
+                                L"请求日志为空。请先开启 设置 > 完整记录请求 并产生一些请求。" },
+    /* S_RESPCACHE_CLEARED */ { L"Response cache cleared", L"响应缓存已清除" },
 };
 
 static const wchar_t* T(int id) { return g_strings[id][g_lang ? 1 : 0]; }

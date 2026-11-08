@@ -138,6 +138,9 @@ static UINT32 IpcGetRulePos(UINT32 id) { PBIPC_BEGIN(PBOP_GET_RULE_POS); PbW_U32
 static void IpcSetTrafficLog(BOOL v)  { PBIPC_BEGIN(PBOP_SET_TRAFFIC_LOG); PbW_U32(&_w, v != 0); PbIpcCall(_b, _w.len); }
 static void IpcClearConnLogs(void)    { PBIPC_BEGIN(PBOP_CLEAR_CONN_LOGS); PbIpcCall(_b, _w.len); }
 static void IpcSetLogAll(BOOL v)      { PBIPC_BEGIN(PBOP_SET_LOG_ALL);     PbW_U32(&_w, v != 0); PbIpcCall(_b, _w.len); }
+static void IpcSetRespCache(BOOL v)   { PBIPC_BEGIN(PBOP_SET_RESP_CACHE);  PbW_U32(&_w, v != 0); PbIpcCall(_b, _w.len); }
+static void IpcClearRespCache(void)   { PBIPC_BEGIN(PBOP_CLEAR_RESP_CACHE); PbIpcCall(_b, _w.len); }
+static void IpcSetReqLog(BOOL v)      { PBIPC_BEGIN(PBOP_SET_REQ_LOG);     PbW_U32(&_w, v != 0); PbIpcCall(_b, _w.len); }
 // Live connections: asks the service for up to max flows. Every field is bounds-checked; a malformed reply yields 0.
 static UINT32 IpcGetFlows(PBFlow *out, UINT32 max)
 {
@@ -287,6 +290,8 @@ static int PB_LoadService(PBApi* api)
     api->SetTrafficLoggingEnabled = IpcSetTrafficLog;   api->SetEnabled = IpcSetEnabled;   api->SetLogEveryConnection = IpcSetLogAll;
     api->ClearConnectionLogs = IpcClearConnLogs;   api->Start = IpcStart; api->Stop = IpcStop;
     api->GetFlows = IpcGetFlows;
+    api->SetResponseCacheEnabled = IpcSetRespCache; api->ClearResponseCache = IpcClearRespCache;
+    api->SetRequestLoggingEnabled = IpcSetReqLog;
     return PB_IPC_OK;
 }
 

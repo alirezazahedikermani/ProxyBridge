@@ -87,6 +87,19 @@ PROXYBRIDGE_API void ProxyBridge_SetLogCallback(LogCallback callback);
 PROXYBRIDGE_API void ProxyBridge_SetConnectionCallback(ConnectionCallback callback);
 PROXYBRIDGE_API void ProxyBridge_SetTrafficLoggingEnabled(BOOL enable);
 PROXYBRIDGE_API void ProxyBridge_ClearConnectionLogs(void);  // Clear connection history from memory
+// HTTP response cache (default off). Plain HTTP only - HTTPS is encrypted end to end and is never cached.
+// Cacheable GET responses (Content-Length, no no-store/no-cache/private/Set-Cookie) are kept in memory (LRU, 64 MB,
+// at most 8 MB per response) for their max-age / Expires lifetime, or 5 minutes when they state none, and later
+// identical requests are answered from memory with "X-ProxyBridge-Cache: HIT". Turning it off empties the cache.
+PROXYBRIDGE_API void ProxyBridge_SetResponseCacheEnabled(BOOL enable);
+PROXYBRIDGE_API void ProxyBridge_ClearResponseCache(void);
+PROXYBRIDGE_API void ProxyBridge_GetResponseCacheStats(UINT32* entries, UINT64* bytes);
+// Full request log (default off): every proxied plain-HTTP request - process, destination, complete head and body
+// (up to 1 MB) - plus its response status is appended to %ProgramData%\ProxyBridge\Logs\requests.log (rotated at
+// 50 MB). TLS connections are logged with their server name only (their content is encrypted). The file contains
+// whatever the applications send (cookies, tokens, passwords) in clear text.
+PROXYBRIDGE_API void ProxyBridge_SetRequestLoggingEnabled(BOOL enable);
+PROXYBRIDGE_API BOOL ProxyBridge_GetRequestLogPath(char* buffer, size_t size);   // UTF-8 path of the request log file
 PROXYBRIDGE_API BOOL ProxyBridge_Start(void);
 PROXYBRIDGE_API BOOL ProxyBridge_Stop(void);
 #ifdef __cplusplus

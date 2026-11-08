@@ -34,6 +34,8 @@ typedef void (*pfnSetLogCallback)(void (*cb)(const char*));
 typedef void (*pfnSetConnectionCallback)(void (*cb)(const char*, DWORD,
                                           const char*, uint16_t, const char*));
 typedef void (*pfnSetTrafficLogging)(int enable);
+typedef void (*pfnSetFlag)(int enable);
+typedef int  (*pfnGetRequestLogPath)(char* buffer, size_t size);
 typedef int  (*pfnStart)(void);
 typedef int  (*pfnStop)(void);
 
@@ -43,6 +45,9 @@ static pfnDisableRule           g_DisableRule    = NULL;
 static pfnSetLogCallback        g_SetLog         = NULL;
 static pfnSetConnectionCallback g_SetConn        = NULL;
 static pfnSetTrafficLogging     g_SetTraffic     = NULL;
+static pfnSetFlag               g_SetRespCache   = NULL;
+static pfnSetFlag               g_SetReqLog      = NULL;
+static pfnGetRequestLogPath     g_GetReqLogPath  = NULL;
 static pfnStart                 g_Start          = NULL;
 static pfnStop                  g_Stop           = NULL;
 static HMODULE                  g_hDll           = NULL;
@@ -73,6 +78,8 @@ typedef struct {
 typedef struct {
     int         localhost_via_proxy;   // legacy global key; only the default for rules that lack their own
     int         traffic_logging;
+    int         response_cache;    // "ResponseCache": cache plain-HTTP responses
+    int         request_logging;   // "RequestLogging": write every request in full to the request log file
     PBProxyConfig configs[MAX_PROXY_CONFIGS];
     int         num_configs;
     PBRule      rules[MAX_RULES];
@@ -214,6 +221,12 @@ static void show_help(const char* prog)
     printf("                         1 - Log messages only\n");
     printf("                         2 - Connection events only\n");
     printf("                         3 - Both logs and connections\n\n");
+    printf("  --cache <on|off>     Cache plain-HTTP responses in memory (overrides the profile's\n");
+    printf("                       \"ResponseCache\"; default off). HTTPS is never cached.\n\n");
+    printf("  --log-requests <on|off>\n");
+    printf("                       Write every request in full (head + body) to\n");
+    printf("                       %%ProgramData%%\\ProxyBridge\\Logs\\requests.log (overrides the\n");
+    printf("                       profile's \"RequestLogging\"; default off)\n\n");
     printf("  --version            Show version information\n");
     printf("  -?, -h, --help       Show this help\n\n");
     printf("Commands:\n");
@@ -221,6 +234,7 @@ static void show_help(const char* prog)
     printf("Examples:\n");
     printf("  ProxyBridge_CLI.exe --profile C:\\Users\\user\\myconfig.pbprofile\n");
     printf("  ProxyBridge_CLI.exe --profile myconfig.pbprofile --verbose 2\n");
+    printf("  ProxyBridge_CLI.exe --profile myconfig.pbprofile --cache on --log-requests on\n");
     printf("  ProxyBridge_CLI.exe --update\n\n");
 }
 
@@ -486,6 +500,8 @@ static bool load_profile(const char* path, PBProfile* prof)
     memset(prof, 0, sizeof(PBProfile));
     prof->localhost_via_proxy = jbool(json, "LocalhostViaProxy",        false) ? 1 : 0;
     prof->traffic_logging     = jbool(json, "IsTrafficLoggingEnabled",  true)  ? 1 : 0;
+    prof->response_cache      = jbool(json, "ResponseCache",            false) ? 1 : 0;
+    prof->request_logging     = jbool(json, "RequestLogging",           false) ? 1 : 0;
 
     // ── ProxyConfigs ──────────────────────────────────────────────────────────
     const char* arr = jarray(json, "ProxyConfigs");
@@ -622,6 +638,9 @@ static bool load_dll(void)
     LOAD_FN(pfnSetLogCallback,        g_SetLog,         "ProxyBridge_SetLogCallback");
     LOAD_FN(pfnSetConnectionCallback, g_SetConn,        "ProxyBridge_SetConnectionCallback");
     LOAD_FN(pfnSetTrafficLogging,     g_SetTraffic,     "ProxyBridge_SetTrafficLoggingEnabled");
+    LOAD_FN(pfnSetFlag,               g_SetRespCache,   "ProxyBridge_SetResponseCacheEnabled");
+    LOAD_FN(pfnSetFlag,               g_SetReqLog,      "ProxyBridge_SetRequestLoggingEnabled");
+    LOAD_FN(pfnGetRequestLogPath,     g_GetReqLogPath,  "ProxyBridge_GetRequestLogPath");
     LOAD_FN(pfnStart,                 g_Start,          "ProxyBridge_Start");
     LOAD_FN(pfnStop,                  g_Stop,           "ProxyBridge_Stop");
 
@@ -947,6 +966,8 @@ static void do_update(void)
 int main(int argc, char* argv[])
 {
     bool do_upd       = false;
+    int  opt_cache    = -1;      // -1 = as in the profile
+    int  opt_reqlog   = -1;
     char profile_path[MAX_PATH] = {0};
 
     // No args: show full help
@@ -984,6 +1005,16 @@ int main(int argc, char* argv[])
                 return 1;
             }
             strncpy_s(profile_path, MAX_PATH, argv[++i], _TRUNCATE);
+        }
+        else if (strcmp(argv[i], "--cache") == 0 || strcmp(argv[i], "--log-requests") == 0)
+        {
+            int* dst = (strcmp(argv[i], "--cache") == 0) ? &opt_cache : &opt_reqlog;
+            if (i + 1 >= argc || (_stricmp(argv[i + 1], "on") != 0 && _stricmp(argv[i + 1], "off") != 0))
+            {
+                fprintf(stderr, "ERROR: %s requires on or off.\n", argv[i]);
+                return 1;
+            }
+            *dst = _stricmp(argv[++i], "on") == 0 ? 1 : 0;
         }
         else if (strcmp(argv[i], "--verbose") == 0)
         {
@@ -1055,6 +1086,19 @@ int main(int argc, char* argv[])
     if (g_verbose == 1 || g_verbose == 3) g_SetLog(log_cb);
     if (g_verbose == 2 || g_verbose == 3) g_SetConn(conn_cb);
     g_SetTraffic(prof.traffic_logging);
+    if (opt_cache  >= 0) prof.response_cache  = opt_cache;
+    if (opt_reqlog >= 0) prof.request_logging = opt_reqlog;
+    g_SetRespCache(prof.response_cache);
+    g_SetReqLog(prof.request_logging);
+    printf("  Response cache: %s\n", prof.response_cache ? "on (plain HTTP only)" : "off");
+    if (prof.request_logging)
+    {
+        char rlp[MAX_PATH * 3] = {0};
+        g_GetReqLogPath(rlp, sizeof(rlp));
+        printf("  Request log   : on -> %s\n", rlp);
+    }
+    else
+        printf("  Request log   : off\n");
 
     // ── Add proxy configs, map profile IDs to DLL-assigned IDs ───────────────
     typedef struct { uint32_t profile_id; uint32_t dll_id; } IdMap;

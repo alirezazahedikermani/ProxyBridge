@@ -28,6 +28,10 @@
 #define IDM_ZOOM_RESET              225
 #define IDM_PROXY_ENABLE            226   // main on/off switch
 #define IDM_SET_LOGALL              227   // log every connection (no de-duplication)
+#define IDM_SET_RESPCACHE           228   // cache plain-HTTP responses
+#define IDM_RESPCACHE_CLEAR         229   // empty the response cache
+#define IDM_SET_REQLOG              232   // log every request in full to the request log file
+#define IDM_REQLOG_OPEN             233   // open the request log file
 #define IDM_PROFILE_RENAME          244
 
 // Log Filters (list) dialog

@@ -418,6 +418,17 @@ BOOL relay_start(SOCKET client, SOCKET proxy, const FLOW_META *meta);
 UINT32 relay_flows_snapshot(PB_FLOW *out, UINT32 max);   // live proxied TCP connections, newest first; raw fields only
 extern volatile LONG g_active_relays;
 extern volatile LONG g_handler_threads;   // per-connection handshake threads still running (Stop waits for them)
+// Hands two handshaken sockets to the IOCP relay pool, or relays them on the calling thread if the pool is unavailable.
+// Takes ownership of both sockets (closes them if ProxyBridge is stopping).
+void relay_or_block(SOCKET client, SOCKET proxy, const FLOW_META *meta);
+
+// ---- pb_httpcache.c ----
+extern volatile BOOL g_resp_cache_enabled;   // TRUE: cacheable plain-HTTP responses are kept and served from memory
+extern volatile BOOL g_req_log_enabled;      // TRUE: every request is written in full to the request log file
+// Drives a proxied TCP connection exchange by exchange when it carries plain HTTP (cache + request log), otherwise
+// hands it to the relay unchanged. Takes ownership of both sockets.
+void http_inspect_session(SOCKET client, SOCKET proxy, const FLOW_META *meta);
+void resp_cache_clear(void);
 
 // ---- ProxyBridge.c ----
 DWORD WINAPI packet_processor(LPVOID arg);

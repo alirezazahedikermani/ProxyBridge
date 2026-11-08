@@ -17,6 +17,8 @@ Universal proxy client for Windows applications - route any application through 
       - [Process Rules](#process-rules)
       - [Exporting and Importing Rules](#exporting-and-importing-rules)
       - [Activity Monitoring](#activity-monitoring)
+      - [Response Cache](#response-cache)
+      - [Request Logging](#request-logging)
     - [Command Line Interface (CLI)](#command-line-interface-cli)
       - [Profile Format](#profile-format)
       - [Basic Usage](#basic-usage)
@@ -246,6 +248,56 @@ saved per profile. It only changes what is listed: rules are applied to the same
 
 **Note:** Adding a rule with action **PROXY** while no proxy is configured will fall back to a direct connection. Configure at least one proxy server before using PROXY rules.
 
+#### Response Cache
+
+**Settings → Cache HTTP Responses** turns the response cache on or off (off by default, saved per profile). While it
+is on, the responses of proxied **plain HTTP** requests are kept in memory and identical later requests - from any
+application and over any connection - are answered from memory without going through the proxy. A response served
+from the cache carries the header `X-ProxyBridge-Cache: HIT` and an `Age` header, and the Activity log shows
+`[CACHE] HIT ...`. **Settings → Clear Response Cache** empties it; turning the cache off empties it too.
+
+What is cached follows the usual HTTP caching rules:
+
+- only `GET` requests without `Authorization` or `Range`; a request with `Cache-Control: no-cache` / `Pragma: no-cache`
+  always goes to the server (its fresh response replaces the cached one), `no-store` bypasses the cache completely
+- only responses with status 200, 203, 300, 301 or 308 and a `Content-Length`, and not those with `no-store`,
+  `no-cache`, `private`, `Set-Cookie` or a `Vary` other than `Accept-Encoding` (the `Accept-Encoding` value is part of
+  the cache key)
+- a response is kept for its `s-maxage` / `max-age` / `Expires` lifetime (at most 24 hours), or **5 minutes** when it
+  states none
+- the cache holds up to 64 MB (least recently used responses are dropped first), at most 8 MB per response
+
+**HTTPS is never cached**: its content is encrypted end to end between the application and the server, so ProxyBridge
+cannot see or reuse it. The cache only applies to proxied TCP connections (rules with action **PROXY**).
+
+#### Request Logging
+
+**Settings → Log Full Requests** turns full request logging on or off (off by default, saved per profile).
+**Settings → Open Request Log** opens the file in Notepad. Every proxied request is appended to
+
+```
+%ProgramData%\ProxyBridge\Logs\requests.log
+```
+
+with the time, a per-connection number, the application (name and PID), the destination (IP, port and the domain
+name when known) and the proxy, followed by:
+
+- **plain HTTP**: the complete request - request line, every header and the body (up to 1 MB per request; binary bodies
+  are written as a hex dump of the first 64 KB) - and a line with the response status, the body size and the cache
+  result (`HIT`, `MISS`, `MISS, stored`, `BYPASS` or `off`)
+- **HTTPS / TLS**: the server name (SNI) only - the content is encrypted and cannot be logged
+- **other TCP protocols**: a hex dump of the first bytes the application sent
+
+The file is rotated to `requests.log.1` when it grows past 50 MB.
+
+> **Warning:** the request log contains everything the applications send over plain HTTP - cookies, tokens, passwords
+> and form data - in clear text, and other users of the computer may be able to read files under `%ProgramData%`.
+> Turn it on only while you need it and delete the file afterwards.
+
+Both features inspect only proxied TCP connections whose application speaks HTTP/1.x first. WebSocket / `Upgrade`,
+`CONNECT`, `Expect: 100-continue` uploads and anything that is not HTTP are passed through unchanged. While either
+feature is on, plain-HTTP connections are handled outside the **Live connections** view.
+
 ### Command Line Interface (CLI)
 
 `ProxyBridge_CLI.exe` is a lightweight native CLI that loads a `.pbprofile` exported from the GUI and runs ProxyBridge headlessly - no GUI required.
@@ -262,6 +314,8 @@ The CLI reads `.pbprofile` files exported directly from the GUI (**Profile → E
 | `ProxyRules[]` | Array of routing rules (up to 256) |
 | `ProxyRules[].LocalhostViaProxy` | Per rule: also proxy `127.x.x.x` / `::1` traffic that matches this rule (default `false`) |
 | `IsTrafficLoggingEnabled` | Enable/disable connection logging |
+| `ResponseCache` | Cache plain-HTTP responses in memory (default `false`, see [Response Cache](#response-cache)) |
+| `RequestLogging` | Write every request in full to the request log (default `false`, see [Request Logging](#request-logging)) |
 | `ProxyConfigId` | Per-rule proxy assignment (maps to `ProxyConfigs[].Id`) |
 
 #### Basic Usage
@@ -275,6 +329,9 @@ ProxyBridge_CLI.exe --profile myconfig.pbprofile --verbose 2
 
 # Run with full log and connection output
 ProxyBridge_CLI.exe --profile myconfig.pbprofile --verbose 3
+
+# Cache plain-HTTP responses and log every request in full (overrides the profile)
+ProxyBridge_CLI.exe --profile myconfig.pbprofile --cache on --log-requests on
 
 # Check for updates (does not require Administrator)
 ProxyBridge_CLI.exe --update
@@ -307,6 +364,14 @@ Options:
                          1 - Log messages only
                          2 - Connection events only
                          3 - Both logs and connections
+
+  --cache <on|off>     Cache plain-HTTP responses in memory (overrides the profile's
+                       "ResponseCache"; default off). HTTPS is never cached.
+
+  --log-requests <on|off>
+                       Write every request in full (head + body) to
+                       %ProgramData%\ProxyBridge\Logs\requests.log (overrides the
+                       profile's "RequestLogging"; default off)
 
   --version            Show version information
   -?, -h, --help       Show help

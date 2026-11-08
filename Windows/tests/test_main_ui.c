@@ -1,6 +1,7 @@
 // test_main_ui.c - creates the REAL main window (same setup as wWinMain, engine stubbed) and drives the menu:
 //   Proxy -> Enable ProxyBridge (the main switch)   menu item, title "(PAUSED)", tray tooltip, engine call, language rebuild
 //   Settings -> Log Every Connection               default off, toggles, tells the engine, saved with the profile
+//   Settings -> Cache HTTP Responses / Log Full Requests   same, plus Clear Response Cache
 // Needs a desktop session (it creates real windows).
 #define wWinMain pb_real_wWinMain
 #include "../gui/main.c"
@@ -12,6 +13,11 @@ static BOOL g_lastEnabledArg = TRUE, g_lastLogAllArg = FALSE;
 static void StubSetEnabled(BOOL v) { g_enabledCalls++; g_lastEnabledArg = v; }
 static void StubSetLogAll(BOOL v)  { g_logAllCalls++;  g_lastLogAllArg = v; }
 static void StubSetTraffic(BOOL v) { (void)v; }
+static int  g_cacheCalls = 0, g_cacheClears = 0, g_reqLogCalls = 0;
+static BOOL g_lastCacheArg = FALSE, g_lastReqLogArg = FALSE;
+static void StubSetCache(BOOL v)   { g_cacheCalls++;  g_lastCacheArg = v; }
+static void StubClearCache(void)   { g_cacheClears++; }
+static void StubSetReqLog(BOOL v)  { g_reqLogCalls++; g_lastReqLogArg = v; }
 static void StubSetLog(PBLogCallback cb) { (void)cb; }
 static void StubSetConn(PBConnectionCallback cb) { (void)cb; }
 
@@ -55,6 +61,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     PB_ProfileDefaults(&g_profile, L"uitest");
     g_api.SetEnabled = StubSetEnabled; g_api.SetTrafficLoggingEnabled = StubSetTraffic; g_api.SetLogEveryConnection = StubSetLogAll;
     g_api.SetLogCallback = StubSetLog; g_api.SetConnectionCallback = StubSetConn;
+    g_api.SetResponseCacheEnabled = StubSetCache; g_api.ClearResponseCache = StubClearCache; g_api.SetRequestLoggingEnabled = StubSetReqLog;
 
     CreateDarkBrushes();
     WNDCLASSEXW wc; ZeroMemory(&wc, sizeof(wc));
@@ -113,6 +120,26 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     CHECK(g_probe.logEveryConnection == 0);
     PB_ProfileDefaults(&g_probe, L"x");                                                  /* a profile without the key: off */
     CHECK(g_probe.logEveryConnection == 0);
+
+    /* 5b. Cache HTTP Responses / Log Full Requests: off by default, toggle, tell the engine, saved with the profile */
+    CHECK(MenuExists(g_hMain, IDM_SET_RESPCACHE) && MenuExists(g_hMain, IDM_SET_REQLOG) && MenuExists(g_hMain, IDM_RESPCACHE_CLEAR) && MenuExists(g_hMain, IDM_REQLOG_OPEN));
+    CHECK(!MenuChecked(g_hMain, IDM_SET_RESPCACHE) && !MenuChecked(g_hMain, IDM_SET_REQLOG) && g_respCache == FALSE && g_reqLog == FALSE);
+    CHECK(GetMenuState(GetMenu(g_hMain), IDM_RESPCACHE_CLEAR, MF_BYCOMMAND) & MF_GRAYED);   /* nothing to clear while off */
+    SendMessageW(g_hMain, WM_COMMAND, MAKEWPARAM(IDM_SET_RESPCACHE, 0), 0);
+    CHECK(g_respCache == TRUE && g_lastCacheArg == TRUE && g_cacheCalls == 1 && MenuChecked(g_hMain, IDM_SET_RESPCACHE));
+    CHECK(!(GetMenuState(GetMenu(g_hMain), IDM_RESPCACHE_CLEAR, MF_BYCOMMAND) & MF_GRAYED));
+    SendMessageW(g_hMain, WM_COMMAND, MAKEWPARAM(IDM_RESPCACHE_CLEAR, 0), 0);
+    CHECK(g_cacheClears == 1);
+    SendMessageW(g_hMain, WM_COMMAND, MAKEWPARAM(IDM_SET_REQLOG, 0), 0);
+    CHECK(g_reqLog == TRUE && g_lastReqLogArg == TRUE && g_reqLogCalls == 1 && MenuChecked(g_hMain, IDM_SET_REQLOG));
+    PB_ProfileLoad(g_activeProfile, &g_probe);
+    CHECK(g_probe.responseCache == 1 && g_probe.requestLogging == 1);
+    SendMessageW(g_hMain, WM_COMMAND, MAKEWPARAM(IDM_SET_RESPCACHE, 0), 0);
+    SendMessageW(g_hMain, WM_COMMAND, MAKEWPARAM(IDM_SET_REQLOG, 0), 0);
+    CHECK(g_respCache == FALSE && g_lastCacheArg == FALSE && g_reqLog == FALSE && g_lastReqLogArg == FALSE);
+    CHECK(!MenuChecked(g_hMain, IDM_SET_RESPCACHE) && !MenuChecked(g_hMain, IDM_SET_REQLOG));
+    PB_ProfileLoad(g_activeProfile, &g_probe);
+    CHECK(g_probe.responseCache == 0 && g_probe.requestLogging == 0);
 
     /* 6. Live Connections tab */
     g_api.GetFlows = StubGetFlows;
